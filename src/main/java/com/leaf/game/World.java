@@ -5,9 +5,9 @@ import java.util.List;
 
 public class World {
 
-    public static final int WIDTH  = 128;  // X axis
+    public static final int WIDTH  = 256;  // X axis
     public static final int HEIGHT =64;  // Y axis (up)
-    public static final int DEPTH  = 128;  // Z axis
+    public static final int DEPTH  = 256;  // Z axis
 
     private static final int TERRAIN_HEIGHT = 8; // y where grass appears
 

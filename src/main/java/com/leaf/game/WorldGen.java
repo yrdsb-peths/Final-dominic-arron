@@ -15,6 +15,7 @@ public class WorldGen {
     }
 
     private Block getBlock(int x, int y, int z) {
-        return random.nextBoolean()? Block.STONE:Block.AIR;
+        int surface = 10 + (int) (5 * Math.sin(x * 0.1) + 5*Math.sin(z * 0.1));
+        return y < surface ? Block.STONE : Block.AIR;
     }
 }

@@ -7,7 +7,7 @@ import static org.lwjgl.glfw.GLFW.*;
 public class Player {
 
     //Debug Mode
-    public boolean debugMode = true;
+    public boolean debugMode = false;
     // Feet position (bottom-center of the player box)
     public Vector3f position;
 
