@@ -22,7 +22,7 @@ public class Shader {
             throw new RuntimeException("Could not create Shader Program");
         }
 
-        // Load and compile the two shaders
+        // Load and compile the two shaders safely, using the createShader method
         vertexShaderId = createShader(vertexPath, GL_VERTEX_SHADER);
         fragmentShaderId = createShader(fragmentPath, GL_FRAGMENT_SHADER);
 
