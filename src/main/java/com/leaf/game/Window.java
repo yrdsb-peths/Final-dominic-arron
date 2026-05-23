@@ -170,6 +170,9 @@ public class Window {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             shader.bind();
+            shader.setUniform("sunDirection",    new org.joml.Vector3f(GameConfig.sunDirX, GameConfig.sunDirY, GameConfig.sunDirZ));
+            shader.setUniform("sunStrength",     GameConfig.sunStrength);
+            shader.setUniform("ambientStrength", GameConfig.ambientStrength);
             Matrix4f view       = camera.getViewMatrix();
             Matrix4f projection = camera.getProjectionMatrix();
 
@@ -313,6 +316,18 @@ public class Window {
         float[] deb = { GameConfig.densityErosionBoost };
         if (ImGui.sliderFloat("Erosion Boost", deb, 0.0f, 0.5f))
             GameConfig.densityErosionBoost = deb[0];
+        ImGui.text("Lighting");
+        ImGui.separator();
+        float[] sdx = { GameConfig.sunDirX };
+        if (ImGui.sliderFloat("Sun X", sdx, -1f, 1f)) GameConfig.sunDirX = sdx[0];
+        float[] sdy = { GameConfig.sunDirY };
+        if (ImGui.sliderFloat("Sun Y", sdy, 0f, 1f))  GameConfig.sunDirY = sdy[0];
+        float[] sdz = { GameConfig.sunDirZ };
+        if (ImGui.sliderFloat("Sun Z", sdz, -1f, 1f)) GameConfig.sunDirZ = sdz[0];
+        float[] ss = { GameConfig.sunStrength };
+        if (ImGui.sliderFloat("Sun Strength", ss, 0f, 1f))     GameConfig.sunStrength = ss[0];
+        float[] as = { GameConfig.ambientStrength };
+        if (ImGui.sliderFloat("Ambient", as, 0f, 1f))           GameConfig.ambientStrength = as[0];
 
         // ── REGENERATE ───────────────────────────────────────────────────────
         ImGui.text("Rebuild");

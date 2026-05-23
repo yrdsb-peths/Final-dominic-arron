@@ -15,11 +15,9 @@ public class Mesh {
     public Mesh(float[] vertices, int[] indices) {
         this.vertexCount = indices.length;
 
-        // 1. Create and bind the VAO
         vaoId = glGenVertexArrays();
         glBindVertexArray(vaoId);
 
-        // 2. Upload Vertices to VBO
         vboId = glGenBuffers();
         glBindBuffer(GL_ARRAY_BUFFER, vboId);
         FloatBuffer verticesBuffer = MemoryUtil.memAllocFloat(vertices.length);
@@ -27,7 +25,6 @@ public class Mesh {
         glBufferData(GL_ARRAY_BUFFER, verticesBuffer, GL_STATIC_DRAW);
         MemoryUtil.memFree(verticesBuffer);
 
-        // 3. Upload Indices to EBO
         eboId = glGenBuffers();
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eboId);
         IntBuffer indicesBuffer = MemoryUtil.memAllocInt(indices.length);
@@ -35,28 +32,27 @@ public class Mesh {
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indicesBuffer, GL_STATIC_DRAW);
         MemoryUtil.memFree(indicesBuffer);
 
-        // 4. Define Vertex Attributes (Telling OpenGL how to read the VBO)
-        // Format:[x, y, z, r, g, b] -> 6 floats total per vertex
-        int stride = 6 * Float.BYTES;
+        // Vertex format: x, y, z, r, g, b, nx, ny, nz  —  9 floats per vertex
+        int stride = 9 * Float.BYTES;
 
-        // Position attribute (index 0 in shader)
+        // location 0 — position (3 floats, starts at byte 0)
         glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0);
         glEnableVertexAttribArray(0);
 
-        // Color attribute (index 1 in shader)
+        // location 1 — color  (3 floats, starts after 3 floats = byte 12)
         glVertexAttribPointer(1, 3, GL_FLOAT, false, stride, 3 * Float.BYTES);
         glEnableVertexAttribArray(1);
 
-        // Unbind the VAO to prevent accidental changes
+        // location 2 — normal (3 floats, starts after 6 floats = byte 24)
+        glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 6 * Float.BYTES);
+        glEnableVertexAttribArray(2);
+
         glBindVertexArray(0);
     }
 
     public void render() {
-        // Bind the VAO to draw
         glBindVertexArray(vaoId);
-        // Draw the triangles
         glDrawElements(GL_TRIANGLES, vertexCount, GL_UNSIGNED_INT, 0);
-        // Unbind
         glBindVertexArray(0);
     }
 
