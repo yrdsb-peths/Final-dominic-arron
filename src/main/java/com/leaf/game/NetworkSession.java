@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  */
 public class NetworkSession {
 
-    private static final int PORT = 25565;
+    private static final int PORT = 49152;
 
     // -----------------------------------------------------------------------
     // Remote player state — written by network thread, read by game loop.
