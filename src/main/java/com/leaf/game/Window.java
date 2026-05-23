@@ -22,6 +22,8 @@ public class Window {
     private final double[]  lastMouseX = {640.0};
     private final double[]  lastMouseY = {360.0};
     private final boolean[] firstMouse = {true};
+    private Block selectedBlock = Block.GRASS;
+    private RaycastResult lastTarget = null;
 
     // ImGui — glfw can init early, gl3 must wait until GL.createCapabilities() has run
     private final ImGuiImplGlfw imguiGlfw = new ImGuiImplGlfw();
@@ -62,6 +64,13 @@ public class Window {
                 glfwSetInputMode(window, GLFW_CURSOR,
                         showDebug ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             }
+            // Block selection hotbar (keys 1–4)
+            if (action == GLFW_PRESS) {
+                if (key == GLFW_KEY_1) selectedBlock = Block.GRASS;
+                if (key == GLFW_KEY_2) selectedBlock = Block.DIRT;
+                if (key == GLFW_KEY_3) selectedBlock = Block.STONE;
+                // Add more block types here as you add them to Block.java
+            }
         });
 
         glfwMakeContextCurrent(window);
@@ -95,6 +104,35 @@ public class Window {
             camera.pitch -= dy * GameConfig.mouseSensitivity;
             camera.clampPitch();
         });
+
+        glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            // Only act when the debug menu is closed (cursor is captured)
+            if (showDebug) return;
+
+            // Only on press (not release)
+            if (action != GLFW_PRESS) return;
+
+            if (lastTarget == null || !lastTarget.hit) return;
+
+            if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                // BREAK: replace the hit block with air
+                world.setBlock(lastTarget.hitX, lastTarget.hitY, lastTarget.hitZ, Block.AIR);
+
+                // If the broken block was on the border between two chunks,
+                // mark the neighbor chunk dirty too so its exposed face appears.
+                markNeighborChunksDirty(lastTarget.hitX, lastTarget.hitY, lastTarget.hitZ);
+            }
+
+            if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+                // PLACE: put selected block in the air position adjacent to the hit face
+                // Safety check: don't place inside the player's own bounding box
+                if (!playerOccupies(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ)) {
+                    world.setBlock(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ, selectedBlock);
+                    markNeighborChunksDirty(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ);
+                }
+            }
+        });
+
     }
 
     private void loop() {
@@ -127,6 +165,7 @@ public class Window {
             lastTime = now;
 
             player.update(window, camera, world, deltaTime);
+            lastTarget = player.getTargetBlock(camera, world);
             world.updateChunks(world, worldGen, player);
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -152,6 +191,12 @@ public class Window {
             // ImGui frame
             imguiGlfw.newFrame();
             ImGui.newFrame();
+            if (showDebug) renderDebugMenu();
+            ImGui.render();
+            imguiGl3.renderDrawData(ImGui.getDrawData());
+            imguiGlfw.newFrame();
+            ImGui.newFrame();
+            renderHUD();                          // ← always shown
             if (showDebug) renderDebugMenu();
             ImGui.render();
             imguiGl3.renderDrawData(ImGui.getDrawData());
@@ -196,5 +241,73 @@ public class Window {
         world.clearAllChunks();
         worldGen.resetSeed(GameConfig.seed);
         player.position.y = 60.0f;
+    }
+
+    private void renderHUD() {
+        // Use ImGui's background draw list — draws in screen space, always on top,
+        // without needing a separate OpenGL pass.
+        var draw = ImGui.getForegroundDrawList();
+
+        // Crosshair — two lines crossing at screen center
+        float cx = 1280 / 2.0f;
+        float cy = 720  / 2.0f;
+        float size = 10.0f;
+        int white = ImGui.colorConvertFloat4ToU32(1, 1, 1, 0.9f);
+        int black = ImGui.colorConvertFloat4ToU32(0, 0, 0, 0.6f);
+
+        // Draw a dark outline first, then white on top (visible on any background)
+        draw.addLine(cx - size - 1, cy, cx + size + 1, cy, black, 3.0f);
+        draw.addLine(cx, cy - size - 1, cx, cy + size + 1, black, 3.0f);
+        draw.addLine(cx - size, cy, cx + size, cy, white, 1.5f);
+        draw.addLine(cx, cy - size, cx, cy + size, white, 1.5f);
+
+        // Selected block indicator (bottom center)
+        String blockName = selectedBlock.name();
+        ImGui.setNextWindowPos(640 - 60, 700);
+        ImGui.setNextWindowSize(120, 22);
+        ImGui.begin("##hud", imgui.flag.ImGuiWindowFlags.NoDecoration
+                | imgui.flag.ImGuiWindowFlags.NoBackground
+                | imgui.flag.ImGuiWindowFlags.NoMove
+                | imgui.flag.ImGuiWindowFlags.NoInputs);
+        ImGui.text("[ " + blockName + " ]");
+        ImGui.end();
+    }
+
+    /**
+     * When a block on a chunk border is modified, the neighboring chunk's
+     * mesh is now wrong — it was built without knowing this block was air.
+     * Mark neighbors dirty so they rebuild their exposed faces.
+     */
+    private void markNeighborChunksDirty(int wx, int wy, int wz) {
+        // Check all 6 neighbors of the modified block
+        int[][] neighbors = {
+                {wx+1, wy, wz}, {wx-1, wy, wz},
+                {wx, wy+1, wz}, {wx, wy-1, wz},
+                {wx, wy, wz+1}, {wx, wy, wz-1}
+        };
+
+        for (int[] n : neighbors) {
+            int ncx = Math.floorDiv(n[0], Chunk.SIZE);
+            int ncz = Math.floorDiv(n[2], Chunk.SIZE);
+            Chunk neighbor = world.getChunk(ncx, ncz);
+            if (neighbor != null) neighbor.dirty = true;
+        }
+    }
+
+    /**
+     * Returns true if the given block position overlaps the player's body.
+     * Prevents placing a block inside yourself (which traps you).
+     */
+    private boolean playerOccupies(int bx, int by, int bz) {
+        float px = player.position.x;
+        float py = player.position.y;
+        float pz = player.position.z;
+        float halfW = 0.3f;   // half of player width (0.6 / 2)
+        float height = 1.8f;
+
+        // Does the block box (bx to bx+1, etc.) overlap the player box?
+        return px + halfW > bx && px - halfW < bx + 1
+                && py + height > by && py           < by + 1
+                && pz + halfW > bz && pz - halfW < bz + 1;
     }
 }
