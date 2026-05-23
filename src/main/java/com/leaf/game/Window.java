@@ -20,11 +20,19 @@ public class Window {
     private World world;
     private WorldGen worldGen;   // field so renderDebugMenu can reach it
 
-    // which block the player has selected to place
-    private Block selectedBlock = Block.GRASS;
     //the last raycast result (updated every frame, used by click handlers)
     private RaycastResult lastTarget = null;
 
+    // MULTIPLAYER
+    private NetworkSession network;
+    private RemotePlayer   remotePlayer;
+
+    // BLOCK INTERACTION — track mouse button clicks between frames
+    private final boolean[] leftClickThisFrame  = {false};
+    private final boolean[] rightClickThisFrame = {false};
+
+    // Which block to place (cycle with number keys later)
+    private Block selectedBlock = Block.STONE;
     private final double[]  lastMouseX = {640.0};
     private final double[]  lastMouseY = {360.0};
     private final boolean[] firstMouse = {true};
@@ -75,6 +83,13 @@ public class Window {
             }
         });
 
+        // Listen for mouse button clicks
+        glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            if (action == GLFW_PRESS) {
+                if (button == GLFW_MOUSE_BUTTON_LEFT)  leftClickThisFrame[0]  = true;
+                if (button == GLFW_MOUSE_BUTTON_RIGHT) rightClickThisFrame[0] = true;
+            }
+        });
         glfwMakeContextCurrent(window);
         glfwSwapInterval(1);
         glfwShowWindow(window);
@@ -116,39 +131,35 @@ public class Window {
             if (lastTarget == null || !lastTarget.hit) return;
 
             if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                // BREAK: replace the hit block with air
+                // BREAK
                 world.setBlock(lastTarget.hitX, lastTarget.hitY, lastTarget.hitZ, Block.AIR);
-
-                // If the broken block was on the border between two chunks,
-                // mark the neighbor chunk dirty too so its exposed face appears.
                 markNeighborChunksDirty(lastTarget.hitX, lastTarget.hitY, lastTarget.hitZ);
+
+                // MULTIPLAYER: Tell friend we broke a block
+                if (network != null && network.connected) {
+                    network.sendBreak(lastTarget.hitX, lastTarget.hitY, lastTarget.hitZ);
+                }
             }
 
             if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-                // PLACE: put selected block in the air position adjacent to the hit face
-                // Safety check: don't place inside the player's own bounding box
+                // PLACE
                 if (!playerOccupies(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ)) {
                     world.setBlock(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ, selectedBlock);
                     markNeighborChunksDirty(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ);
+
+                    // MULTIPLAYER: Tell friend we placed a block
+                    if (network != null && network.connected) {
+                        network.sendPlace(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ, selectedBlock);
+                    }
                 }
             }
         });
     }
 
     private void loop() {
-        // MULTIPLAYER: Networking stuff is fine here (it doesn't use the GPU)
-        GameServer server = new GameServer();
-        server.start(); // if you are hosting
-
-        // GameClient client = new GameClient("192.168.x.x");
-        // client.connect(); // if you are joining
-
-        // ── 1. WAKE UP OPENGL (Must happen before any Mesh or Shader is created!) ──
+        // ── 1. WAKE UP OPENGL ──
         GL.createCapabilities();
         imguiGl3.init("#version 330");
-
-        // ── 2. NOW CREATE GRAPHICS OBJECTS ──
-        RemotePlayer remotePlayer = new RemotePlayer();
 
         glEnable(GL_DEPTH_TEST);
         glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
@@ -163,11 +174,18 @@ public class Window {
 
         this.player   = new Player(16.0f, 60.0f, 16.0f);
         this.world    = new World();
-        this.worldGen = new WorldGen();          // now a field, not a local
-        world.updateChunks(world, worldGen, player);
+        this.worldGen = new WorldGen();
 
-        Matrix4f model    = new Matrix4f();
-        double   lastTime = glfwGetTime();
+        // ── MULTIPLAYER SETUP ──
+        // Host: new NetworkSession(true, null)
+        // Join: new NetworkSession(false, "HOST_IP_HERE")
+        network = new NetworkSession(true, null);
+        network.start();
+        RemotePlayer remotePlayer = new RemotePlayer();
+
+        world.updateChunks(world, worldGen, player);
+        Matrix4f model = new Matrix4f();
+        double lastTime = glfwGetTime();
 
         while (!glfwWindowShouldClose(window)) {
             double now       = glfwGetTime();
@@ -175,16 +193,33 @@ public class Window {
             lastTime = now;
 
             player.update(window, camera, world, deltaTime);
-            // MULTIPLAYER: send our position every frame
-            server.sendPosition(
-                    player.position.x, player.position.y, player.position.z,
-                    camera.yaw, camera.pitch
-            );
 
-            // MULTIPLAYER: update where we draw our friend
-            remotePlayer.x = server.remoteX;
-            remotePlayer.y = server.remoteY;
-            remotePlayer.z = server.remoteZ;
+            // ── MULTIPLAYER SYNC ──
+            if (network != null && network.connected) {
+                // 1. Send our position
+                network.sendPosition(player.position.x, player.position.y, player.position.z, camera.yaw, camera.pitch);
+
+                // 2. Update friend's body position
+                remotePlayer.x = network.remoteX;
+                remotePlayer.y = network.remoteY;
+                remotePlayer.z = network.remoteZ;
+
+                // 3. Process blocks friend broke
+                int[] brk = network.pollBreak();
+                if (brk != null) {
+                    world.setBlock(brk[0], brk[1], brk[2], Block.AIR);
+                    markNeighborChunksDirty(brk[0], brk[1], brk[2]);
+                }
+
+                // 4. Process blocks friend placed
+                int[] plc = network.pollPlace();
+                if (plc != null) {
+                    Block placedBlock = Block.values()[plc[3]]; // Convert ordinal back to Block enum
+                    world.setBlock(plc[0], plc[1], plc[2], placedBlock);
+                    markNeighborChunksDirty(plc[0], plc[1], plc[2]);
+                }
+            }
+
             lastTarget = player.getTargetBlock(camera, world);
             world.updateChunks(world, worldGen, player);
 
@@ -210,7 +245,7 @@ public class Window {
                 }
             }
             // MULTIPLAYER: render friend's body
-            if (server.friendConnected) {
+            if (network != null && network.connected) {
                 remotePlayer.render(shader, projection, view);
             }
             shader.unbind();
