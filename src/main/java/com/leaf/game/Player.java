@@ -128,7 +128,11 @@ public class Player {
             for (int i = 0; i < substeps; i++) {
                 if (stepX != 0) {
                     position.x += stepX;
-                    if (resolveCollisionX(world, stepX)) stepX = 0; // Hit wall, stop X
+                    if (resolveCollisionX(world, stepX)){
+                        stepX = 0; // Hit wall, stop X
+                        isSprinting = false; // <-- STOP SPRINT
+                    }
+
                 }
                 if (stepY != 0) {
                     position.y += stepY;
@@ -136,7 +140,11 @@ public class Player {
                 }
                 if (stepZ != 0) {
                     position.z += stepZ;
-                    if (resolveCollisionZ(world, stepZ)) stepZ = 0; // Hit wall, stop Z
+                    if (resolveCollisionZ(world, stepZ)){
+                        isSprinting = false; // <-- STOP SPRINT
+                        // stepZ = 0; // Hit wall, stop Z
+                    }
+
                 }
             }
         }
