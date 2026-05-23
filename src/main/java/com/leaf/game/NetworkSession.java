@@ -20,6 +20,7 @@ public class NetworkSession {
     private final Queue<int[]>  incomingBreaks = new ConcurrentLinkedQueue<>();
     private final Queue<int[]>  incomingPlaces = new ConcurrentLinkedQueue<>();
     private final Queue<String> incomingChats  = new ConcurrentLinkedQueue<>();
+    private final Queue<int[]>  incomingPickups = new ConcurrentLinkedQueue<>();
 
     private final boolean isHost;
     private final String  hostIp;
@@ -107,8 +108,17 @@ public class NetworkSession {
             try { incomingPlaces.add(new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3])}); } catch (Exception ignored) {}
         } else if (line.startsWith("CHAT:")) {
             incomingChats.add(line.substring(5));
+        } else if (line.startsWith("PICKUP:")) {
+            String[] p = line.substring(7).split(",");
+            try {
+                incomingPickups.add(new int[]{
+                        Integer.parseInt(p[0]),
+                        Integer.parseInt(p[1]),
+                        Integer.parseInt(p[2])
+                });
+            } catch (Exception ignored) {}
         }
-    }
+    } // <── This single bracket now correctly closes the handleIncoming method at the very end!
 
     public void sendPosition(float x, float y, float z, float yaw, float pitch) { send("POS:" + x + "," + y + "," + z + "," + yaw + "," + pitch); }
     public void sendBreak(int x, int y, int z) { send("BREAK:" + x + "," + y + "," + z); }
@@ -122,4 +132,6 @@ public class NetworkSession {
     public int[] pollBreak() { return incomingBreaks.poll(); }
     public int[] pollPlace() { return incomingPlaces.poll(); }
     public String pollChat() { return incomingChats.poll(); }
+    public void sendPickup(int x, int y, int z) { send("PICKUP:" + x + "," + y + "," + z); }
+    public int[] pollPickup() { return incomingPickups.poll(); }
 }
