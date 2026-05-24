@@ -32,19 +32,19 @@ public class Mesh {
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indicesBuffer, GL_STATIC_DRAW);
         MemoryUtil.memFree(indicesBuffer);
 
-        // Vertex format: x, y, z, r, g, b, nx, ny, nz  —  9 floats per vertex
-        int stride = 9 * Float.BYTES;
+        // Vertex format: x, y, z, r, g, b, a, nx, ny, nz  —  10 floats per vertex
+        int stride = 10 * Float.BYTES;
 
-        // location 0 — position (3 floats, starts at byte 0)
+        // location 0 — position
         glVertexAttribPointer(0, 3, GL_FLOAT, false, stride, 0);
         glEnableVertexAttribArray(0);
 
-        // location 1 — color  (3 floats, starts after 3 floats = byte 12)
-        glVertexAttribPointer(1, 3, GL_FLOAT, false, stride, 3 * Float.BYTES);
+        // location 1 — color (Now 4 floats for RGBA!)
+        glVertexAttribPointer(1, 4, GL_FLOAT, false, stride, 3 * Float.BYTES);
         glEnableVertexAttribArray(1);
 
-        // location 2 — normal (3 floats, starts after 6 floats = byte 24)
-        glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 6 * Float.BYTES);
+        // location 2 — normal
+        glVertexAttribPointer(2, 3, GL_FLOAT, false, stride, 7 * Float.BYTES);
         glEnableVertexAttribArray(2);
 
         glBindVertexArray(0);

@@ -71,9 +71,8 @@ public class Window {
 
     // Fixed 9 Slots
     private final Block[] hotbar = {
-            Block.GRASS, Block.DIRT, Block.STONE,
-            Block.AIR, Block.AIR, Block.AIR,
-            Block.AIR, Block.AIR, Block.AIR
+            Block.GRASS, Block.DIRT, Block.STONE, Block.WATER, // Added Water!
+            Block.AIR, Block.AIR, Block.AIR, Block.AIR, Block.AIR
     };
 
     private final List<DroppedItem> droppedItems = new ArrayList<>();
@@ -285,6 +284,7 @@ public class Window {
                 }
 
                 lastTarget = player.getTargetBlock(camera, world);
+                world.tickLiquids(deltaTime);
                 world.updateChunks(world, worldGen, player);
 
                 Vector3f chestPos = new Vector3f(player.position.x, player.position.y + 0.9f, player.position.z);
@@ -308,22 +308,43 @@ public class Window {
                 shader.setUniform("sunDirection",    new org.joml.Vector3f(GameConfig.sunDirX, GameConfig.sunDirY, GameConfig.sunDirZ));
                 shader.setUniform("sunStrength",     GameConfig.sunStrength);
                 shader.setUniform("ambientStrength", GameConfig.ambientStrength);
+                // Set the underwater uniform
+                boolean isCameraUnderwater = world.getBlock(
+                        (int)Math.floor(camera.position.x),
+                        (int)Math.floor(camera.position.y),
+                        (int)Math.floor(camera.position.z)).isLiquid();
+                shader.setUniform("isUnderwater", isCameraUnderwater ? 1 : 0);
+
                 Matrix4f view       = camera.getViewMatrix();
                 Matrix4f projection = camera.getProjectionMatrix();
 
+                // ── PASS 1: OPAQUE (Stone, Dirt, Grass, Sand) ──
                 for (Chunk chunk : world.getAllChunks()) {
                     if (chunk.dirty) {
-                        if (chunk.mesh != null) chunk.mesh.cleanup();
-                        chunk.mesh = world.buildChunkMesh(chunk);
-                        chunk.dirty = false;
+                        world.buildChunkMeshes(chunk); // Builds both opaque and transparent meshes
                     }
-                    if (chunk.mesh != null) {
+                    if (chunk.opaqueMesh != null) {
                         Matrix4f mvp = new Matrix4f(projection).mul(view).mul(model);
                         shader.setUniform("mvp", mvp);
-                        chunk.mesh.render();
+                        chunk.opaqueMesh.render();
                     }
                 }
 
+                // ── PASS 2: TRANSPARENT (Water, Ice, Leaves) ──
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                for (Chunk chunk : world.getAllChunks()) {
+                    if (chunk.transparentMesh != null) {
+                        Matrix4f mvp = new Matrix4f(projection).mul(view).mul(model);
+                        shader.setUniform("mvp", mvp);
+                        chunk.transparentMesh.render();
+                    }
+                }
+
+                glDisable(GL_BLEND); // Turn blending off so ImGui and other things draw normally
+
+                // ── RENDER DROPPED ITEMS ──
                 for (DroppedItem item : droppedItems) {
                     Mesh itemMesh = getItemMesh(item.blockType);
                     float bob = (float) Math.sin(item.age * 3.0f) * 0.05f;
@@ -360,9 +381,11 @@ public class Window {
 
             glfwSwapBuffers(window);
             glfwPollEvents();
-        }
 
-        for (Chunk chunk : world.getAllChunks()) { if (chunk.mesh != null) chunk.mesh.cleanup(); }
+        }for (Chunk chunk : world.getAllChunks()) {
+            if (chunk.opaqueMesh != null) chunk.opaqueMesh.cleanup();
+            if (chunk.transparentMesh != null) chunk.transparentMesh.cleanup();
+        }
         for (Mesh m : itemMeshes.values()) { m.cleanup(); }
         shader.cleanup();
         imguiGl3.dispose();
@@ -599,7 +622,10 @@ public class Window {
     }
 
     private void regenerateWorld() {
-        for (Chunk chunk : world.getAllChunks()) if (chunk.mesh != null) chunk.mesh.cleanup();
+        for (Chunk chunk : world.getAllChunks()) {
+        if (chunk.opaqueMesh != null) chunk.opaqueMesh.cleanup();
+        if (chunk.transparentMesh != null) chunk.transparentMesh.cleanup();
+        }
         world.clearAllChunks();
         worldGen.resetSeed(GameConfig.seed);
         player.position.y = 100.0f;
@@ -626,20 +652,48 @@ public class Window {
 
     private Mesh getItemMesh(Block block) {
         return itemMeshes.computeIfAbsent(block, b -> {
+            List<Float> verts = new ArrayList<>();
+            List<Integer> idx = new ArrayList<>();
+            int[] vIndex = {0};
+
             float w = 0.12f;
-            float[] topCol    = {b.r * 1.0f, b.g * 1.0f, b.b * 1.0f};
-            float[] sideCol   = {b.r * 0.75f, b.g * 0.75f, b.b * 0.75f};
-            float[] bottomCol = {b.r * 0.5f, b.g * 0.5f, b.b * 0.5f};
-            float[] v = {
-                    -w,w,-w, topCol[0],topCol[1],topCol[2], 0,1,0, w,w,-w, topCol[0],topCol[1],topCol[2], 0,1,0, w,w,w, topCol[0],topCol[1],topCol[2], 0,1,0, -w,w,w, topCol[0],topCol[1],topCol[2], 0,1,0,
-                    -w,-w,w, bottomCol[0],bottomCol[1],bottomCol[2], 0,-1,0, w,-w,w, bottomCol[0],bottomCol[1],bottomCol[2], 0,-1,0, w,-w,-w, bottomCol[0],bottomCol[1],bottomCol[2], 0,-1,0, -w,-w,-w, bottomCol[0],bottomCol[1],bottomCol[2], 0,-1,0,
-                    -w,-w,w, sideCol[0],sideCol[1],sideCol[2], 0,0,1, w,-w,w, sideCol[0],sideCol[1],sideCol[2], 0,0,1, w,w,w, sideCol[0],sideCol[1],sideCol[2], 0,0,1, -w,w,w, sideCol[0],sideCol[1],sideCol[2], 0,0,1,
-                    w,-w,-w, sideCol[0],sideCol[1],sideCol[2], 0,0,-1, -w,-w,-w, sideCol[0],sideCol[1],sideCol[2], 0,0,-1, -w,w,-w, sideCol[0],sideCol[1],sideCol[2], 0,0,-1, w,w,-w, sideCol[0],sideCol[1],sideCol[2], 0,0,-1,
-                    w,-w,w, sideCol[0],sideCol[1],sideCol[2], 1,0,0, w,-w,-w, sideCol[0],sideCol[1],sideCol[2], 1,0,0, w,w,-w, sideCol[0],sideCol[1],sideCol[2], 1,0,0, w,w,w, sideCol[0],sideCol[1],sideCol[2], 1,0,0,
-                    -w,-w,-w, sideCol[0],sideCol[1],sideCol[2], -1,0,0, -w,-w,w, sideCol[0],sideCol[1],sideCol[2], -1,0,0, -w,w,w, sideCol[0],sideCol[1],sideCol[2], -1,0,0, -w,w,-w, sideCol[0],sideCol[1],sideCol[2], -1,0,0
-            };
-            int[] idx = {0,1,2,2,3,0, 4,5,6,6,7,4, 8,9,10,10,11,8, 12,13,14,14,15,12, 16,17,18,18,19,16, 20,21,22,22,23,20};
-            return new Mesh(v, idx);
+            float[] col = {b.r, b.g, b.b};
+            addBox(verts, idx, vIndex, -w, -w, -w, w, w, w, col);
+
+            float[] vArr = new float[verts.size()];
+            for (int i = 0; i < verts.size(); i++) vArr[i] = verts.get(i);
+            int[] iArr = new int[idx.size()];
+            for (int i = 0; i < idx.size(); i++) iArr[i] = idx.get(i);
+
+            return new Mesh(vArr, iArr);
         });
+    }
+
+    // Helper to generate 3D boxes for items cleanly with Alpha support!
+    private void addBox(List<Float> verts, List<Integer> idx, int[] vIndex,
+                        float minX, float minY, float minZ,
+                        float maxX, float maxY, float maxZ, float[] col) {
+        float[][] corners = {
+                {minX, minY, maxZ}, {maxX, minY, maxZ}, {maxX, maxY, maxZ}, {minX, maxY, maxZ}, // Front
+                {maxX, minY, minZ}, {minX, minY, minZ}, {minX, maxY, minZ}, {maxX, maxY, minZ}, // Back
+                {minX, maxY, minZ}, {maxX, maxY, minZ}, {maxX, maxY, maxZ}, {minX, maxY, maxZ}, // Top
+                {minX, minY, maxZ}, {maxX, minY, maxZ}, {maxX, minY, minZ}, {minX, minY, minZ}, // Bottom
+                {maxX, minY, maxZ}, {maxX, minY, minZ}, {maxX, maxY, minZ}, {maxX, maxY, maxZ}, // Right
+                {minX, minY, minZ}, {minX, minY, maxZ}, {minX, maxY, maxZ}, {minX, maxY, minZ}  // Left
+        };
+
+        for (int face = 0; face < 6; face++) {
+            float shade = (face == 2) ? 1.0f : (face == 3 ? 0.5f : 0.8f);
+            for (int i = 0; i < 4; i++) {
+                float[] corner = corners[face * 4 + i];
+                verts.add(corner[0]); verts.add(corner[1]); verts.add(corner[2]);
+                verts.add(col[0]*shade); verts.add(col[1]*shade); verts.add(col[2]*shade);
+                verts.add(1.0f); // <--- THE MISSING ALPHA CHANNEL THAT BROKE IT!
+                verts.add(0f); verts.add(1f); verts.add(0f);
+            }
+            int b = vIndex[0];
+            idx.add(b); idx.add(b+1); idx.add(b+2); idx.add(b+2); idx.add(b+3); idx.add(b);
+            vIndex[0] += 4;
+        }
     }
 }

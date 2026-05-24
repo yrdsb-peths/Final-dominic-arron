@@ -15,6 +15,7 @@ public class Inventory {
         items.put(Block.GRASS, 0);
         items.put(Block.DIRT,  0);
         items.put(Block.STONE, 0);
+        items.put(Block.WATER, 64);
     }
 
     /** Add one block to the inventory. Called when a block is broken. */

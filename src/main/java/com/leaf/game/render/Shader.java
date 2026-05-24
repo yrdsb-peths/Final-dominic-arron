@@ -83,4 +83,9 @@ public class Shader {
         unbind();
         if (programId != 0) glDeleteProgram(programId);
     }
+
+    // Single int uniform (e.g. boolean flags)
+    public void setUniform(String name, int value) {
+        glUniform1i(glGetUniformLocation(programId, name), value);
+    }
 }

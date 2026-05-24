@@ -20,7 +20,7 @@ public class Player {
 
     private float   velocityY   = 0.0f;
     private boolean onGround    = false;
-    private boolean wasInWater  = false;  // tracks water entry/exit frame
+    private boolean wasInWater  = false;
 
     private static final float WIDTH      = 0.6f;
     private static final float HEIGHT     = 1.8f;
@@ -42,7 +42,7 @@ public class Player {
     public void update(long window, Camera camera, World world, float deltaTime) {
         double now = glfwGetTime();
 
-        // ── DOUBLE-TAP W = SPRINT ─────────────────────────────────────────
+        // ── DOUBLE-TAP W = SPRINT / SWIM FAST ─────────────────────────────
         boolean currentW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
         if (currentW && !lastW) {
             if (now - lastWTime < 0.3) isSprinting = true;
@@ -68,16 +68,28 @@ public class Player {
                 : isSprinting ? GameConfig.SPRINT_SPEED
                   : GameConfig.WALK_SPEED;
 
-        Vector3f forward = camera.getForward();
+        // ── USE LOOK DIRECTION IF IN WATER FOR PITCH SWIMMING ──
+        boolean isCameraInWater = isBlockLiquid(world, camera.position.x, camera.position.y, camera.position.z);
+        Vector3f forward = isCameraInWater ? camera.getLookDirection() : camera.getForward();
         Vector3f right   = camera.getRight();
 
         float dx = 0f, dy = 0f, dz = 0f;
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { dx += forward.x * speed * deltaTime; dz += forward.z * speed * deltaTime; }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { dx -= forward.x * speed * deltaTime; dz -= forward.z * speed * deltaTime; }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { dx += right.x   * speed * deltaTime; dz += right.z   * speed * deltaTime; }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { dx -= right.x   * speed * deltaTime; dz -= right.z   * speed * deltaTime; }
+
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+            dx += forward.x * speed * deltaTime;
+            dz += forward.z * speed * deltaTime;
+            if (isCameraInWater) velocityY += forward.y * speed * 3.5f * deltaTime; // Swim up/down!
+        }
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+            dx -= forward.x * speed * deltaTime;
+            dz -= forward.z * speed * deltaTime;
+            if (isCameraInWater) velocityY -= forward.y * speed * 3.5f * deltaTime;
+        }
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { dx += right.x * speed * deltaTime; dz += right.z * speed * deltaTime; }
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { dx -= right.x * speed * deltaTime; dz -= right.z * speed * deltaTime; }
 
         if (debugMode) {
+            // ... (keep Fly Mode as is)
             // ── FLY MODE ──────────────────────────────────────────────────
             if (currentSpace) dy += speed * deltaTime;
             if (shiftHeld)    dy -= speed * deltaTime;
@@ -89,46 +101,38 @@ public class Player {
             boolean inWater   = isBlockLiquid(world, position.x, position.y + 0.1f,     position.z);
             boolean submerged = isBlockLiquid(world, position.x, position.y + EYE_HEIGHT, position.z);
 
-            if (inWater && !wasInWater) {
-                // Just entered water — cancel fall tracking so entry
-                // doesn't deal fall damage AND jumping out of water
-                // starts fresh from the water surface.
-                highestY = position.y;
-            }
-            wasInWater = inWater;
+            if (inWater && !wasInWater) highestY = position.y;
 
             if (inWater) {
                 // ── WATER PHYSICS ─────────────────────────────────────────
-                // Reduced gravity + buoyancy when submerged.
-                // Net force submerged: +5.5 * dt upward (floats toward surface).
-                // Net force feet-only: -2.5 * dt (gently sinks back down if idle).
                 velocityY -= 2.5f * deltaTime;
                 if (submerged) velocityY += 8.0f * deltaTime;
 
-                // Active swimming controls
-                if (currentSpace) velocityY += 22f * deltaTime;
-                if (shiftHeld)    velocityY -= 22f * deltaTime;
+                // Heavily increased vertical responsiveness!
+                if (currentSpace) velocityY += 35f * deltaTime;
+                if (shiftHeld)    velocityY -= 35f * deltaTime;
 
-                // Water drag — caps speed and simulates resistance
                 velocityY *= (float) Math.pow(0.85f, deltaTime * 60f);
                 velocityY  = Math.max(-4.0f, Math.min(4.0f, velocityY));
 
-                // Horizontal movement slowed in water
-                dx *= 0.55f;
-                dz *= 0.55f;
-
-                // No fall damage while in water — tracked from exit point
+                if (isSprinting) { dx *= 0.90f; dz *= 0.90f; } else { dx *= 0.55f; dz *= 0.55f; }
                 highestY = position.y;
 
             } else {
-                // ── LAND PHYSICS ──────────────────────────────────────────
+                // ── LAND PHYSICS & DOLPHIN JUMP ───────────────────────────
                 velocityY -= GameConfig.GRAVITY * deltaTime;
-                if (currentSpace && onGround) {
+
+                // If you hold Space right as you leave the water, you get launched onto land!
+                if (wasInWater && currentSpace) {
+                    velocityY = GameConfig.JUMP_FORCE * 0.85f;
+                }
+                else if (currentSpace && onGround) {
                     velocityY = GameConfig.JUMP_FORCE;
                     onGround  = false;
                 }
             }
 
+            wasInWater = inWater; // Save for next frame
             dy = velocityY * deltaTime;
 
             // ── AXIS-BY-AXIS SUB-STEPPING ─────────────────────────────────
@@ -169,21 +173,9 @@ public class Player {
         camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
     }
 
-    // =========================================================================
-    // WATER DETECTION
-    // =========================================================================
-
-    /** True if the voxel at the given world position is a liquid. */
     private boolean isBlockLiquid(World world, float x, float y, float z) {
-        return world.getBlock(
-                (int) Math.floor(x),
-                (int) Math.floor(y),
-                (int) Math.floor(z)).isLiquid();
+        return world.getBlock((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z)).isLiquid();
     }
-
-    // =========================================================================
-    // COLLISION (unchanged — water is now non-solid so these skip it)
-    // =========================================================================
 
     private static final float EPSILON = 0.01f;
 
@@ -250,6 +242,8 @@ public class Player {
         while (dist < MAX_REACH) {
             rx += ddx; ry += ddy; rz += ddz; dist += STEP;
             int bx = (int) Math.floor(rx), by = (int) Math.floor(ry), bz = (int) Math.floor(rz);
+
+            // Raycast passes cleanly through water since it is not solid!
             if (world.getBlock(bx, by, bz).isSolid()) {
                 RaycastResult res = new RaycastResult();
                 res.hit = true; res.hitX = bx; res.hitY = by; res.hitZ = bz;

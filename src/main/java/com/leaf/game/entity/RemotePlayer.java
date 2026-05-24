@@ -94,13 +94,12 @@ public class RemotePlayer {
         };
 
         for (int face = 0; face < 6; face++) {
-            // Give top/sides different brightness
             float shade = (face == 2) ? 1.0f : (face == 3 ? 0.5f : 0.8f);
-
             for (int i = 0; i < 4; i++) {
                 float[] corner = corners[face * 4 + i];
                 verts.add(corner[0]); verts.add(corner[1]); verts.add(corner[2]);
                 verts.add(col[0]*shade); verts.add(col[1]*shade); verts.add(col[2]*shade);
+                verts.add(1.0f); // <--- THE MISSING ALPHA CHANNEL
                 verts.add(0f); verts.add(1f); verts.add(0f); // Dummy normals
             }
             int b = vIndex[0];

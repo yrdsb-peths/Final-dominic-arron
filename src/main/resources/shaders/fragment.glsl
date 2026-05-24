@@ -1,30 +1,34 @@
 #version 330 core
-
-in vec3 vertexColor;
+in vec4 vertexColor;
 in vec3 vertexNormal;
 
-// Sun light
-uniform vec3  sunDirection;    // direction the light is coming FROM (normalised in Java)
-uniform float sunStrength;     // how bright the sun is (0.0 – 1.0)
-uniform float ambientStrength; // minimum brightness even in full shadow (0.0 – 1.0)
+uniform vec3  sunDirection;
+uniform float sunStrength;
+uniform float ambientStrength;
+uniform int   isUnderwater; // New flag!
 
 out vec4 FragColor;
 
-void main()
-{
-    // How much does this face point toward the sun?
-    // dot() = 1.0 if face looks straight at sun, 0.0 if perpendicular, negative if facing away.
-    // max(0) clamps the "facing away" case to zero — no negative light.
+void main() {
     float diffuse = max(0.0, dot(normalize(vertexNormal), normalize(sunDirection)));
-
-    // Final light = constant ambient + sun contribution
     float light = ambientStrength + sunStrength * diffuse;
 
-    // Apply light to the baked vertex color (which already includes AO)
-    vec3 color = vertexColor * light;
-
-    // Gamma correction — makes dark areas feel natural instead of muddy
+    // Apply light to the RGB, but keep Alpha untouched
+    vec3 color = vertexColor.rgb * light;
     vec3 gammaCorrected = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 1.2));
 
-    FragColor = vec4(gammaCorrected, 1.0);
+    // ── UNDERWATER FOG / BLUR EFFECT ──────────────────────────────────
+    if (isUnderwater == 1) {
+        // Calculate distance from camera using depth buffer
+        float depthDist = gl_FragCoord.z / gl_FragCoord.w;
+
+        // Deep blue fog that gets denser the further you look
+        float fogFactor = 1.0 - exp(-depthDist * 0.15);
+        vec3 waterFogColor = vec3(0.05, 0.20, 0.55); // Deep ocean blue
+
+        // Always apply a 30% tint, blending to 100% fog in the distance
+        gammaCorrected = mix(gammaCorrected, waterFogColor, clamp(fogFactor + 0.3, 0.0, 1.0));
+    }
+
+    FragColor = vec4(gammaCorrected, vertexColor.a);
 }
