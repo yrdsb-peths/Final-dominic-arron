@@ -63,7 +63,7 @@ public class GameConfig {
 
     public static int beachMaxAltitude  = 2;
     public static int snowAltitude      = 44;
-    public static int mountainSnowAltitude = 220;
+    public static int mountainSnowAltitude = 120;
 
     public static float sunDirX         = 0.6f;
     public static float sunDirY         = 1.0f;
