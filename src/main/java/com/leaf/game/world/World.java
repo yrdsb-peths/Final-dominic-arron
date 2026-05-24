@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class World {
     public static final int WIDTH  = 128;
-    public static final int HEIGHT = 256;
+    public static final int HEIGHT = 512;
     public static final int DEPTH  = 128;
 
     private final HashMap<Long, Chunk> chunks = new HashMap<>();
@@ -94,7 +94,7 @@ public class World {
                     if (mods != null) {
                         for (Map.Entry<Integer, Block> entry : mods.entrySet()) {
                             int idx = entry.getKey();
-                            chunk.setBlock(idx & 15, (idx >> 8) & 255, (idx >> 4) & 15, entry.getValue());
+                            chunk.setBlock(idx & 15, (idx >> 8) & 1023, (idx >> 4) & 15, entry.getValue());
                         }
                     }
 
@@ -318,6 +318,17 @@ public class World {
         chunk.opaqueMesh = buildMesh(oVerts, oIdx);
         chunk.transparentMesh = buildMesh(tVerts, tIdx);
         chunk.dirty = false;
+
+        // NEW: First time compile notification to align neighbor chunk borders
+        if (!chunk.meshBuilt) {
+            chunk.meshBuilt = true;
+            int cx = chunk.cx;
+            int cz = chunk.cz;
+            Chunk nX = getChunk(cx + 1, cz); if (nX != null) nX.dirty = true;
+            Chunk pX = getChunk(cx - 1, cz); if (pX != null) pX.dirty = true;
+            Chunk nZ = getChunk(cx, cz + 1); if (nZ != null) nZ.dirty = true;
+            Chunk pZ = getChunk(cx, cz - 1); if (pZ != null) pZ.dirty = true;
+        }
     }
 
     private Mesh buildMesh(List<Float> verts, List<Integer> indices) {

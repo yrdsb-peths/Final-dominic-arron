@@ -122,7 +122,7 @@ public class WorldGen {
                     float coastFade = Math.max(0f, Math.min(1f, (c - 0.05f) / 0.15f));
                     blend *= coastFade;
 
-                    float massiveY = GameConfig.seaLevel + 5f + (fbmH * 225f);
+                    float massiveY = GameConfig.seaLevel + 10f + (fbmH * 380f);
 
                     targetY = lerp(targetY, massiveY, blend);
 
