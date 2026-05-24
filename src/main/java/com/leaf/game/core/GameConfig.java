@@ -3,7 +3,7 @@ package com.leaf.game.core;
 public class GameConfig {
 
     // ── WORLD ────────────────────────────────────────────────────────────────
-    public static long  seed           = 12345L;
+    public static long  seed           = 69420L;
     public static int   renderDistance = 6;
     public static int   seaLevel       = 20;
 
@@ -112,5 +112,5 @@ public class GameConfig {
     public static float JUMP_FORCE   = 10.0f;
     public static float WALK_SPEED   = 5.0f;
     public static float SPRINT_SPEED = 8.5f;
-    public static float FLY_SPEED    = 15.0f;
+    public static float FLY_SPEED    = 100.0f;
 }

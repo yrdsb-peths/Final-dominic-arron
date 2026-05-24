@@ -13,8 +13,9 @@ public class WorldGen {
     private Noise humidity;
     private Noise density3D;
     private Noise riverNoise;
+    private Noise biomeJitter;   // fuzzes biome borders — no hard lines
 
-    // ── Cave noise generators ─────────────────────────────────────────────────
+    // Cave noises
     private Noise cheeseCave;
     private Noise spagNoise1;
     private Noise spagNoise2;
@@ -34,6 +35,7 @@ public class WorldGen {
         cheeseCave      = new Noise(seed + 7000L);
         spagNoise1      = new Noise(seed + 8000L);
         spagNoise2      = new Noise(seed + 9000L);
+        biomeJitter     = new Noise(seed + 10000L);
     }
 
     public void resetSeed(long seed) { init(seed); }
@@ -84,7 +86,7 @@ public class WorldGen {
                 GameConfig.riverOctaves, GameConfig.riverPersist);
     }
 
-    /** Combined terrain height [0, 1] before caves. 0 = ocean floor, 1 = peak. */
+    /** Combined terrain height [0,1] before caves. */
     public float sampleHeight(int wx, int wz) {
         return computeFinalShape(
                 sampleContinentalness(wx, wz),
@@ -100,8 +102,6 @@ public class WorldGen {
         int worldX = chunk.cx * Chunk.SIZE;
         int worldZ = chunk.cz * Chunk.SIZE;
 
-        // seaFrac: normalized sea level in [0,1] shape space.
-        // Columns with shape < seaFrac have their surface below water.
         final float seaFrac =
                 (GameConfig.seaLevel - GameConfig.heightBase) / (float) GameConfig.heightRange;
 
@@ -110,45 +110,49 @@ public class WorldGen {
                 int wx = worldX + lx;
                 int wz = worldZ + lz;
 
-                // ── SAMPLE TERRAIN NOISE ──────────────────────────────────
+                // ── TERRAIN SHAPE ─────────────────────────────────────────
                 float c    = sampleContinentalness(wx, wz);
                 float e    = sampleErosion(wx, wz);
                 float pv   = samplePeaksValleys(wx, wz);
                 float temp = sampleTemperature(wx, wz);
+                float hum  = sampleHumidity(wx, wz);
 
                 float eNorm    = (e + 1f) / 2f;
                 float flatness = erosionFlatnessSpline(eNorm);
                 float shape    = computeFinalShape(c, e, pv);
 
                 // ── RIVER CARVING ─────────────────────────────────────────
-                // |river| < threshold selects the zero-crossing band of the
-                // noise field, which forms naturally branching filaments.
-                //
-                // FIX vs previous version: we now carve RELATIVE to the current
-                // terrain shape, not down to a fixed seaFrac target.
-                // A mountain river and a plains river both cut the same small
-                // groove (≈2–3 blocks), so neither becomes a ravine.
-                //
-                // The floor clamp ensures the carve never goes more than
-                // riverFloorMargin below sea level — water always fills the bed.
+                // Carve relative to current terrain height — same depth cut
+                // everywhere, so mountain rivers don't become canyons.
                 float river    = sampleRiver(wx, wz);
                 float absRiver = Math.abs(river);
                 boolean isRiver = absRiver < GameConfig.riverThreshold
                         && shape > seaFrac + GameConfig.riverElevationBuffer;
 
                 if (isRiver) {
-                    float carveT      = 1f - (absRiver / GameConfig.riverThreshold); // 1=centre, 0=edge
-                    float carvedShape = shape - GameConfig.riverCarveDepth * carveT;
-                    float riverFloor  = seaFrac - GameConfig.riverFloorMargin;
-                    shape = Math.max(riverFloor, carvedShape);
+                    float carveT     = 1f - absRiver / GameConfig.riverThreshold;
+                    float carved     = shape - GameConfig.riverCarveDepth * carveT;
+                    float riverFloor = seaFrac - GameConfig.riverFloorMargin;
+                    shape = Math.max(riverFloor, carved);
                 }
 
                 float targetY = GameConfig.heightBase + shape * GameConfig.heightRange;
+                int   ty      = (int) targetY;
+
+                // ── BIOME SELECTION ───────────────────────────────────────
+                // Small noise jitter on temp/humidity before the table lookup.
+                // Features ~110 blocks wide → borders look organic, not a
+                // straight line, without affecting ocean/beach/river checks
+                // (those use shape + ty, which aren't jittered).
+                float jT   = biomeJitter.get(wx * 0.009f, wz * 0.009f)          * 0.22f;
+                float jH   = biomeJitter.get(wx * 0.009f + 400f, wz * 0.009f + 400f) * 0.22f;
+                Biome biome = selectBiome(shape, seaFrac, isRiver, ty,
+                        temp + jT, hum + jH);
 
                 // ── 3D DENSITY FIELD ──────────────────────────────────────
-                // Rivers zero out 3D noise — flat, smooth channel walls.
+                // Zeroed in rivers (smooth channel walls) and flat biomes.
                 float vertScale = lerp(GameConfig.densityVerticalScale, 0.55f, flatness);
-                float d3dAmp    = isRiver ? 0f
+                float d3dAmp    = (isRiver || flatness > 0.9f) ? 0f
                         : GameConfig.density3DAmplitude * (1f - flatness);
 
                 boolean[] solid = new boolean[Chunk.HEIGHT];
@@ -157,115 +161,60 @@ public class WorldGen {
                     float n3d = 0f;
                     if (d3dAmp > 0.5f) {
                         n3d = density3D.octave3D(
-                                wx  * GameConfig.density3DFreq,
-                                ly  * GameConfig.density3DFreq * GameConfig.density3DVerticalCompress,
-                                wz  * GameConfig.density3DFreq,
+                                wx * GameConfig.density3DFreq,
+                                ly * GameConfig.density3DFreq * GameConfig.density3DVerticalCompress,
+                                wz * GameConfig.density3DFreq,
                                 GameConfig.density3DOctaves,
                                 GameConfig.density3DPersist) * d3dAmp;
                     }
                     solid[ly] = (heightBias + n3d) > 0;
                 }
 
-                // ── FIND SURFACE Y ────────────────────────────────────────
-                // Needed so cave generators know how far they are from the top.
+                // ── SURFACE Y (for cave depth guard) ─────────────────────
                 int surfaceY = 0;
                 for (int ly = Chunk.HEIGHT - 1; ly >= 0; ly--) {
                     if (solid[ly]) { surfaceY = ly; break; }
                 }
 
                 // ── CHEESE CAVES ──────────────────────────────────────────
-                // Large open cavern pockets. The noise is sampled at each voxel;
-                // if the value exceeds a threshold (adjusted for depth), hollow out.
-                //
-                // Depth bias: deeper blocks get a lower effective threshold
-                // (cheeseDepthBoost at y=0, 0 at y=surfaceY). More voids at depth.
-                //
-                // Guards: bedrock floor is always solid, surface buffer prevents
-                // sinkholes opening at terrain top.
                 int caveTop = surfaceY - GameConfig.caveSurfaceBuffer;
                 for (int ly = GameConfig.caveBedrockFloor; ly < caveTop; ly++) {
                     if (!solid[ly]) continue;
-
-                    float depthT  = 1f - (float) ly / Math.max(1, surfaceY); // 1 at y=0, 0 at surface
-                    float adjThresh = GameConfig.cheeseThreshold
-                            - depthT * GameConfig.cheeseDepthBoost;
-
-                    float cheese = cheeseCave.octave3D(
+                    float depthT    = 1f - (float) ly / Math.max(1, surfaceY);
+                    float adjThresh = GameConfig.cheeseThreshold - depthT * GameConfig.cheeseDepthBoost;
+                    float cheese    = cheeseCave.octave3D(
                             wx * GameConfig.cheeseFreq,
                             ly * GameConfig.cheeseFreq * GameConfig.cheeseVertCompress,
                             wz * GameConfig.cheeseFreq,
-                            GameConfig.cheeseOctaves,
-                            GameConfig.cheesePersist);
-
-                    // octave3D is in [-1, 1]; remap to [0, 1] for threshold test.
-                    if ((cheese + 1f) * 0.5f > adjThresh) {
-                        solid[ly] = false;
-                    }
+                            GameConfig.cheeseOctaves, GameConfig.cheesePersist);
+                    if ((cheese + 1f) * 0.5f > adjThresh) solid[ly] = false;
                 }
 
-                // ── SPAGHETTI / NOODLE CAVES ─────────────────────────────
-                // Two independent 3D noises, each treated as a ridged field:
-                //   ridged(x) = 1 - |x|   →   peak (1.0) exactly at zero-crossings
-                //
-                // Thinking in 3D: each ridged field defines a thin "peel" —
-                // a shell around wherever the underlying noise equals zero.
-                // Where BOTH peels overlap we get a long squiggly tube.
-                //
-                // min(ridge1, ridge2) > spagThreshold = inside both peels = tunnel.
+                // ── SPAGHETTI CAVES ───────────────────────────────────────
+                // Two ridged noises intersected → long branching tunnels.
                 for (int ly = GameConfig.caveBedrockFloor; ly < caveTop; ly++) {
                     if (!solid[ly]) continue;
-
-                    float raw1 = spagNoise1.octave3D(
+                    float raw1   = spagNoise1.octave3D(
                             wx * GameConfig.spagFreq,
                             ly * GameConfig.spagFreq * GameConfig.spagVertCompress,
                             wz * GameConfig.spagFreq,
-                            GameConfig.spagOctaves,
-                            GameConfig.spagPersist);
-
-                    float raw2 = spagNoise2.octave3D(
+                            GameConfig.spagOctaves, GameConfig.spagPersist);
+                    float raw2   = spagNoise2.octave3D(
                             wx * GameConfig.spagFreq,
                             ly * GameConfig.spagFreq * GameConfig.spagVertCompress,
                             wz * GameConfig.spagFreq,
-                            GameConfig.spagOctaves,
-                            GameConfig.spagPersist);
-
-                    float ridge1 = 1f - Math.abs(raw1);  // peak = zero-crossing
-                    float ridge2 = 1f - Math.abs(raw2);  // peak = zero-crossing
-                    float tunnel = Math.min(ridge1, ridge2); // intersection of peels
-
-                    if (tunnel > GameConfig.spagThreshold) {
-                        solid[ly] = false;
-                    }
-                }
-
-                // ── BIOME SURFACE SELECTION ───────────────────────────────
-                int     ty      = (int) targetY;
-                boolean isBeach = ty >= GameConfig.seaLevel - 1
-                        && ty <= GameConfig.seaLevel + GameConfig.beachMaxAltitude;
-                boolean isCold  = temp < GameConfig.coldTempThreshold;
-                boolean isHigh  = ty >= GameConfig.snowAltitude;
-
-                Block surface, subSurface;
-                if (isRiver || isBeach) {
-                    surface = subSurface = Block.SAND;
-                } else if (isCold || isHigh) {
-                    surface    = Block.SNOW;
-                    subSurface = Block.DIRT;
-                } else {
-                    surface    = Block.GRASS;
-                    subSurface = Block.DIRT;
+                            GameConfig.spagOctaves, GameConfig.spagPersist);
+                    float tunnel = Math.min(1f - Math.abs(raw1), 1f - Math.abs(raw2));
+                    if (tunnel > GameConfig.spagThreshold) solid[ly] = false;
                 }
 
                 // ── PLACE BLOCKS ──────────────────────────────────────────
-                // Scan top-down. First solid voxel at/above seaLevel = surface block.
-                // Non-solid voxels at or below seaLevel become WATER automatically —
-                // this fills ocean basins, river channels, AND underwater cave pockets
-                // without any extra per-column logic.
                 boolean hitSurface = false;
                 int     dirtCount  = 0;
 
                 for (int ly = Chunk.HEIGHT - 1; ly >= 0; ly--) {
                     if (!solid[ly]) {
+                        // Non-solid: water if at/below sea level, else air.
                         chunk.setBlock(lx, ly, lz,
                                 ly <= GameConfig.seaLevel ? Block.WATER : Block.AIR);
                     } else {
@@ -273,17 +222,39 @@ public class WorldGen {
                             hitSurface = true;
                             dirtCount  = 0;
                             if (ly >= GameConfig.seaLevel) {
-                                chunk.setBlock(lx, ly, lz, surface);
+                                // Above water: full biome surface.
+                                chunk.setBlock(lx, ly, lz, biome.surfaceBlock());
                             } else if (ly >= GameConfig.seaLevel - 4) {
-                                chunk.setBlock(lx, ly, lz, Block.SAND); // shallow ocean floor
+                                // Shallow ocean floor: sandy transition.
+                                chunk.setBlock(lx, ly, lz, Block.SAND);
                             } else {
-                                chunk.setBlock(lx, ly, lz, Block.STONE); // deep ocean floor
+                                // Deep ocean floor: bare stone.
+                                chunk.setBlock(lx, ly, lz, Block.STONE);
                             }
                         } else if (dirtCount < 3) {
                             dirtCount++;
-                            chunk.setBlock(lx, ly, lz, subSurface);
+                            chunk.setBlock(lx, ly, lz, biome.subSurfaceBlock());
                         } else {
                             chunk.setBlock(lx, ly, lz, Block.STONE);
+                        }
+                    }
+                }
+
+                // ── RIVER WATER POST-PASS ─────────────────────────────────
+                // River channels are carved above seaLevel, so the global
+                // "fill non-solid below seaLevel" pass misses them. After
+                // placing all blocks, find the river bed (top solid block)
+                // and explicitly fill 2 blocks above it with water, giving
+                // a shallow swimmable channel at any elevation.
+                if (isRiver) {
+                    for (int ly = Chunk.HEIGHT - 1; ly >= 1; ly--) {
+                        Block b = chunk.getBlock(lx, ly, lz);
+                        if (b != Block.AIR && b != Block.WATER) {
+                            if (ly + 1 < Chunk.HEIGHT)
+                                chunk.setBlock(lx, ly + 1, lz, Block.WATER);
+                            if (ly + 2 < Chunk.HEIGHT)
+                                chunk.setBlock(lx, ly + 2, lz, Block.WATER);
+                            break;
                         }
                     }
                 }
@@ -291,6 +262,64 @@ public class WorldGen {
         }
 
         chunk.dirty = true;
+    }
+
+    // =========================================================================
+    // BIOME SELECTION
+    // =========================================================================
+
+    /**
+     * Picks a biome for a column.
+     *
+     * Priority order (highest wins):
+     *   1. Ocean   — well below sea level regardless of climate
+     *   2. River   — carved channel, always water-filled
+     *   3. Beach   — narrow coastal strip straddling sea level
+     *   4. Icy peaks — very high altitude, always snowy
+     *   5. Temperature × Humidity table
+     *
+     * temp and hum should already have jitter applied before calling.
+     */
+    private Biome selectBiome(float shape, float seaFrac, boolean isRiver,
+                              int ty, float temp, float hum) {
+        // Ocean: shape clearly below sea level
+        if (shape < seaFrac - 0.01f) return Biome.OCEAN;
+
+        // River channel
+        if (isRiver) return Biome.RIVER;
+
+        // Coastal beach strip
+        if (ty >= GameConfig.seaLevel - 1
+                && ty <= GameConfig.seaLevel + GameConfig.beachMaxAltitude)
+            return Biome.BEACH;
+
+        // Altitude snow override — above this, always icy regardless of biome
+        if (ty >= GameConfig.snowAltitude) return Biome.ICY_PEAKS;
+
+        // ── Temperature × Humidity table ──────────────────────────────────
+        //
+        //              ARID          NEUTRAL         HUMID
+        //  SCORCHING   DESERT        DESERT          SAVANNA
+        //  HOT         SAVANNA       SAVANNA         SAVANNA
+        //  WARM        PLAINS        PLAINS          FOREST
+        //  COOL        PLAINS        FOREST          TAIGA
+        //  COLD        SNOWY_PLAINS  TUNDRA          TUNDRA
+        //  FROZEN      SNOWY_PLAINS  SNOWY_PLAINS    TUNDRA
+        //
+        if (temp > 0.55f) {
+            return hum < 0.10f ? Biome.DESERT   : Biome.SAVANNA;
+        }
+        if (temp > 0.20f) {
+            return Biome.SAVANNA;
+        }
+        if (temp > -0.05f) {
+            return hum < -0.10f ? Biome.PLAINS  : Biome.FOREST;
+        }
+        if (temp > -0.30f) {
+            return hum < -0.15f ? Biome.PLAINS  : Biome.TAIGA;
+        }
+        // Frozen
+        return hum < 0.05f ? Biome.SNOWY_PLAINS : Biome.TUNDRA;
     }
 
     // =========================================================================
@@ -306,19 +335,12 @@ public class WorldGen {
         return lerp(mountainH, contH, flatness);
     }
 
-    /**
-     * Continentalness [-1, 1] → base height [0, 1].
-     *
-     * The steep zone c=[0.30, 0.65] maps 0.35 c-units → 22 y-blocks (~63 y per c-unit).
-     * Plains c=[0.05, 0.30] maps 0.25 c-units → 6 y-blocks (~24 y per c-unit).
-     * Mountains are ~2.6× more sensitive to continentalness than plains.
-     */
     private float continentalnessSpline(float c) {
         if (c < -0.45f) return remap(c, -1.00f, -0.45f, 0.02f, 0.08f);
         if (c < -0.10f) return remap(c, -0.45f, -0.10f, 0.08f, 0.20f);
         if (c <  0.05f) return remap(c, -0.10f,  0.05f, 0.20f, 0.25f);
         if (c <  0.30f) return remap(c,  0.05f,  0.30f, 0.25f, 0.36f);
-        if (c <  0.65f) return remap(c,  0.30f,  0.65f, 0.36f, 0.78f); // ← steep
+        if (c <  0.65f) return remap(c,  0.30f,  0.65f, 0.36f, 0.78f);
         if (c <  0.85f) return remap(c,  0.65f,  0.85f, 0.78f, 0.88f);
         return             remap(c,  0.85f,  1.00f, 0.88f, 0.92f);
     }
@@ -338,7 +360,8 @@ public class WorldGen {
 
     private float lerp(float a, float b, float t) { return a + t * (b - a); }
 
-    private float remap(float val, float inMin, float inMax, float outMin, float outMax) {
+    private float remap(float val, float inMin, float inMax,
+                        float outMin, float outMax) {
         float t = (val - inMin) / (inMax - inMin);
         t = Math.max(0f, Math.min(1f, t));
         return outMin + t * (outMax - outMin);
