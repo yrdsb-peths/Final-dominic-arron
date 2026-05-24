@@ -20,7 +20,7 @@ public class GameConfig {
     public static float erosWarpStrength = 180f;
 
     // ── PEAKS & VALLEYS ──────────────────────────────────────────────────────
-    public static float pvFreq    = 0.025f;
+    public static float pvFreq    = 0.008f; // Lowered from 0.025f for broader, sweeps of terrain
     public static int   pvOctaves = 5;
     public static float pvPersist = 0.50f;
 
@@ -35,19 +35,12 @@ public class GameConfig {
     public static float humPersist = 0.4f;
 
     // ── RIVERS ───────────────────────────────────────────────────────────────
-    // riverCarveDepth: how far below terrain surface a river cuts (shape-space).
-    //   0.04 ≈ 2 blocks. Keep small — rivers are grooves, not canyons.
-    // riverFloorMargin: how far below seaFrac the river floor can sit (shape-space).
-    //   Keeps the river water-filled without carving deep canyons.
-    // riverElevationBuffer: minimum terrain height above seaFrac before carving.
-    //   Prevents rivers appearing on flat coastlines.
     public static float riverFreq            = 0.003f;
     public static int   riverOctaves         = 2;
     public static float riverPersist         = 0.50f;
     public static float riverThreshold       = 0.050f;
-    public static float riverCarveDepth      = 0.045f;   // ← NEW (was hard-coded 0.08)
-    public static float riverFloorMargin     = 0.025f;   // ← NEW
-    public static float riverElevationBuffer = 0.06f;
+    public static float riverCarveDepth      = 0.045f;
+    public static float riverFloorMargin     = 0.025f;
 
     // ── HEIGHT MAPPING ────────────────────────────────────────────────────────
     public static int heightBase  = 8;
@@ -64,36 +57,27 @@ public class GameConfig {
     public static float densityVerticalScale = 0.12f;
 
     // ── CHEESE CAVES ──────────────────────────────────────────────────────────
-    // Large open caverns. Noise > threshold → hollow out.
-    // Threshold biased by depth: deeper = more likely to be hollow.
-    // cheeseVertCompress < 1 = caves stretch horizontally (more ceiling height).
     public static float cheeseFreq         = 0.040f;
     public static float cheeseVertCompress = 0.50f;
     public static int   cheeseOctaves      = 3;
     public static float cheesePersist      = 0.50f;
-    public static float cheeseThreshold    = 0.58f;   // raise = fewer/smaller caverns
-    public static float cheeseDepthBoost   = 0.12f;   // depth lowers effective threshold
+    public static float cheeseThreshold    = 0.58f;
+    public static float cheeseDepthBoost   = 0.12f;
 
     // ── SPAGHETTI / NOODLE CAVES ─────────────────────────────────────────────
-    // Two ridged 3D noises; keep only where BOTH are near their zero-crossing.
-    // That intersection forms long branching tunnels (think overlapping orange peels).
-    // spagVertCompress > cheeseVertCompress = spaghetti runs more horizontally.
     public static float spagFreq           = 0.022f;
     public static float spagVertCompress   = 0.65f;
     public static int   spagOctaves        = 2;
     public static float spagPersist        = 0.50f;
-    public static float spagThreshold      = 0.68f;   // raise = narrower tunnels
+    public static float spagThreshold      = 0.68f;
 
     // ── CAVE GEOMETRY GUARDS ──────────────────────────────────────────────────
-    // caveSurfaceBuffer: don't carve within this many blocks of the surface.
-    //   Prevents sinkholes opening at the surface.
-    // caveBedrockFloor: y-levels below this are always solid (bedrock zone).
     public static int caveSurfaceBuffer = 6;
     public static int caveBedrockFloor  = 4;
 
     // ── BIOME SURFACE THRESHOLDS ─────────────────────────────────────────────
     public static int   beachMaxAltitude  = 2;
-    public static int   snowAltitude      = 48;
+    public static int   snowAltitude      = 44; // Lowered to ensure snow capping on mountains
     public static float coldTempThreshold = -0.25f;
 
     // ── LIGHTING ─────────────────────────────────────────────────────────────
