@@ -11,6 +11,7 @@ import com.leaf.game.world.gen.terrain.AbyssGenerator;
 import com.leaf.game.world.gen.terrain.AbyssConfig;
 import com.leaf.game.world.gen.terrain.ErodedFbmGenerator;
 import com.leaf.game.world.gen.biome.BlockCladder;
+import com.leaf.game.world.gen.feature.FeatureGenerator;
 
 public class WorldGen {
 
@@ -27,6 +28,9 @@ public class WorldGen {
 
     // ── The Abyss Generator (Non-final so it can be initialized in init()) ──
     private AbyssGenerator abyss;
+
+    // ── Surface Feature Generator ──
+    private FeatureGenerator features;
 
     // ── The Mountain Math ──
     private ErodedFbmGenerator eroFbm;
@@ -65,7 +69,8 @@ public class WorldGen {
                 2.0f,
                 0.5f
         );
-        cladder = new BlockCladder(GameConfig.mountainSnowAltitude);
+        cladder  = new BlockCladder(GameConfig.mountainSnowAltitude);
+        features = new FeatureGenerator(seed);
     }
 
     public void resetSeed(long seed) { init(seed); }
@@ -85,10 +90,13 @@ public class WorldGen {
         float closestZ = Math.max(wz0, Math.min(AbyssConfig.centerZ, wz1));
         float dx = closestX - AbyssConfig.centerX;
         float dz = closestZ - AbyssConfig.centerZ;
+        // Use a conservatively large maxR: assume max taper depth of 5000 blocks
+        // so this check stays valid no matter how deep the player descends.
+        float maxDepth = 5000f;
         float maxR = AbyssConfig.entranceRadius
-                   + AbyssConfig.entranceY * AbyssConfig.taperRate
+                   + maxDepth * AbyssConfig.taperRate
                    + AbyssConfig.maxWallVariation
-                   + 30f;  // +30 for the bell-mouth flare headroom
+                   + 30f;  // +30 for bell-mouth flare
         return (dx * dx + dz * dz) < (maxR * maxR);
     }
 
@@ -143,9 +151,10 @@ public class WorldGen {
                 int wx = worldX + lx;
                 int wz = worldZ + lz;
 
-                // Abyss column precompute (cull columns outside the shaft entirely)
+                // Depth-aware cull: shaft widens with depth, so use worldYOffset
+                // to compute the correct maxR (isInOuterZone alone is too narrow at depth).
                 AbyssGenerator.ColData aCol = null;
-                if (abyss.isInOuterZone(wx, wz)) {
+                if (abyss.isInOuterZoneForDepth(wx, wz, worldYOffset)) {
                     aCol = abyss.prepareColumn(wx, wz);
                 }
 
@@ -352,6 +361,10 @@ public class WorldGen {
                 }
             }
         }
+
+        // ── Surface features: sky islands, fossils, crystals, megaliths,
+        //    petrified forest, starfall craters ─────────────────────────
+        features.applyFeatures(chunk, this);
     }
 
     private float computeFinalShape(float c, float e, float pv) {

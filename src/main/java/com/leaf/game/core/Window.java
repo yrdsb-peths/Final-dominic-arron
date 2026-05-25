@@ -31,6 +31,7 @@ import imgui.glfw.ImGuiImplGlfw;
 import imgui.type.ImString;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
@@ -168,6 +169,8 @@ public class Window {
 
                         if (inventory.useBlock(selectedBlock)) {
                             world.setBlock(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ, selectedBlock);
+                            // Immediately rebuild the mesh so the block appears at once
+                            world.rebuildChunkAt(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ);
                             if (network != null && network.connected) {
                                 network.sendPlace(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ, selectedBlock);
                             }
@@ -209,28 +212,12 @@ public class Window {
     }
 
     private void startPreload() {
-        // Apply whatever seed is currently written in GameConfig
         worldGen.resetSeed(GameConfig.seed);
         world.clearAllChunks();
+        world.meshingQueue.clear();
 
-        if (preloadRadius > 0) {
-            int startCX = Math.floorDiv((int) player.position.x, Chunk.SIZE);
-            int startCZ = Math.floorDiv((int) player.position.z, Chunk.SIZE);
-            chunksToGenerate.clear();
-
-            for (int dx = -preloadRadius; dx <= preloadRadius; dx++) {
-                for (int dz = -preloadRadius; dz <= preloadRadius; dz++) {
-                    chunksToGenerate.add(world.getOrCreateChunk(startCX + dx, startCZ + dz));
-                }
-            }
-            totalPreloadCount = chunksToGenerate.size() * 2;
-            currentPreloadProgress = 0;
-            isPreloading = true;
-        }
         networkInitialized = true;
-        if (!isPreloading) {
-            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        }
+        isPreloading = true; // Turn on the loading screen
     }
 
     private void loop() {
@@ -257,6 +244,22 @@ public class Window {
         while (!glfwWindowShouldClose(window)) {
             double now       = glfwGetTime();
             float  deltaTime = (float)(now - lastTime);
+
+            // ── FRAME RATE LIMITER & DELTA CLAMP ─────────────────────────────────────
+            // Capping the physics loop at 120 FPS prevents extreme hardware/driver
+            // overruns and keeps physics and mouse-movement perfectly consistent.
+            float targetMinFrameTime = 1.0f / 120.0f;
+            if (deltaTime < targetMinFrameTime) {
+                try {
+                    // Let the CPU rest to maintain a smooth 120 FPS target
+                    Thread.sleep((long) ((targetMinFrameTime - deltaTime) * 1000));
+                } catch (InterruptedException ignored) {}
+                now = glfwGetTime();
+                deltaTime = (float)(now - lastTime);
+            }
+
+            // Clamp delta-time at 100ms max to prevent physics explosions during lag spikes
+            deltaTime = Math.min(deltaTime, 0.1f);
             lastTime = now;
 
             int[] ww = new int[1], wh = new int[1];
@@ -265,31 +268,35 @@ public class Window {
             if (networkInitialized) {
                 // ── 1. PRE-LOAD WORKER (Generates chunks frame-by-frame) ──
                 // ── 1. TWO-PHASE PRE-LOAD WORKER ──
-                if (isPreloading) {
-                    int halfCount = totalPreloadCount / 2;
-                    if (currentPreloadProgress < halfCount) {
-                        // PHASE 1: GENERATE BLOCKS (Extremely fast, process huge batches)
-                        int batchSize = 64;
-                        for (int i = 0; i < batchSize && currentPreloadProgress < halfCount; i++) {
-                            Chunk chunk = chunksToGenerate.get(currentPreloadProgress);
-                            worldGen.generateChunk(chunk);
-                            currentPreloadProgress++;
-                        }
-                    } else {
-                        // PHASE 2: COMPILE MESHES (Slower, process smaller batches)
-                        // Every block is already in memory, so borders and water align perfectly!
-                        int batchSize = 12;
-                        for (int i = 0; i < batchSize && currentPreloadProgress < totalPreloadCount; i++) {
-                            int index = currentPreloadProgress - halfCount;
-                            Chunk chunk = chunksToGenerate.get(index);
-                            world.buildChunkMeshes(chunk);
-                            currentPreloadProgress++;
-                        }
-                    }
+                // ── 1. ASYNC MESH DRAINER ──
+                // Process finished chunks from the background threads.
+                // Do more per frame if we are on the loading screen to speed it up.
+                int maxMeshesPerFrame = isPreloading ? 12 : 3;
+                int meshedThisFrame = 0;
+                Chunk readyChunk;
+                while (meshedThisFrame < maxMeshesPerFrame && (readyChunk = world.meshingQueue.poll()) != null) {
+                    world.buildChunkMeshes(readyChunk);
+                    readyChunk.state = Chunk.ChunkState.MESHED;
+                    meshedThisFrame++;
+                }
 
-                    if (currentPreloadProgress >= totalPreloadCount) {
+                // ── 2. PREVENT FALLING THROUGH WORLD ──
+                int pCX = Math.floorDiv((int)player.position.x, Chunk.SIZE);
+                int pCZ = Math.floorDiv((int)player.position.z, Chunk.SIZE);
+                Chunk spawnChunk = world.getChunk(pCX, 0, pCZ);
+
+                boolean isTerrainReady = spawnChunk != null && spawnChunk.state == Chunk.ChunkState.MESHED;
+
+                if (!isTerrainReady) {
+                    isPreloading = true;
+                    // Freeze player in mid-air while waiting for threads!
+                    player.position.y = 250.0f;
+                    // CRITICAL FIX: Push initial chunks to background threads
+                    world.updateChunks(world, worldGen, player);
+                } else {
+                    if (isPreloading) {
+                        // Terrain is ready! Do the safe landing and turn off loading screen
                         isPreloading = false;
-                        // Safe landing logic
                         int spawnX = (int)Math.floor(player.position.x);
                         int spawnZ = (int)Math.floor(player.position.z);
                         for (int ly = Chunk.HEIGHT - 1; ly >= 0; ly--) {
@@ -300,13 +307,14 @@ public class Window {
                         }
                         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
                     }
-                }
 
-                if (!isPreloading && !showChat && !showDebug && !showNoiseViewer && !isPaused) {
-                    player.update(window, camera, world, deltaTime);
-                    updateBreaking(deltaTime);
-                } else {
-                    breakingActive = false;
+                    // Normal physics
+                    if (!showChat && !showDebug && !showNoiseViewer && !isPaused) {
+                        player.update(window, camera, world, deltaTime);
+                        updateBreaking(deltaTime);
+                    } else {
+                        breakingActive = false;
+                    }
                 }
 
                 if (network != null && network.connected) {
@@ -331,11 +339,13 @@ public class Window {
                         Block brokenBlock = world.getBlock(brk[0], brk[1], brk[2]);
                         if (brokenBlock.isSolid()) droppedItems.add(new DroppedItem(brk[0], brk[1], brk[2], brokenBlock));
                         world.setBlock(brk[0], brk[1], brk[2], Block.AIR);
+                        world.rebuildChunkAt(brk[0], brk[1], brk[2]);
                     }
 
                     int[] plc = network.pollPlace();
                     if (plc != null) {
                         world.setBlock(plc[0], plc[1], plc[2], Block.values()[plc[3]]);
+                        world.rebuildChunkAt(plc[0], plc[1], plc[2]);
                     }
 
                     String chat = network.pollChat();
@@ -386,6 +396,7 @@ public class Window {
                         (int)Math.floor(camera.position.y),
                         (int)Math.floor(camera.position.z)).isLiquid();
                 shader.setUniform("isUnderwater", isCameraUnderwater ? 1 : 0);
+                shader.setUniform("cameraY",      camera.position.y);
 
                 Matrix4f view       = camera.getViewMatrix();
                 Matrix4f projection = camera.getProjectionMatrix();
@@ -395,33 +406,56 @@ public class Window {
                 int playerCZ = Math.floorDiv((int) player.position.z, Chunk.SIZE);
                 int R = GameConfig.renderDistance;
 
-                int meshCompilesThisFrame = 0;
-                int maxMeshCompilesPerFrame = 1; // strictly limit runtime builds to 1 per frame to eliminate stutter [1]
-
-                // Which vertical chunk slab the player occupies (0 = surface, -1 = first deep, etc.)
+                // Which vertical chunk slab the player occupies (0=surface, -1=first deep, etc.)
                 int playerCY = Math.floorDiv((int) player.position.y, Chunk.HEIGHT);
-                // Render surface (cy=0) plus any deep abyss slabs occupied or visible from the player
-                int cyMin = Math.min(playerCY - 1, -1);  // always include at least cy=-1 when in abyss
+                // Render 4 slabs below the player, always at least down to cy=-4.
+                int cyMin = Math.min(playerCY - 4, -4);
+
+                // ── FRUSTUM CULLING SETUP ─────────────────────────────────────────────
+                Matrix4f mvp = new Matrix4f(projection).mul(view); // model=identity
+                shader.setUniform("mvp", mvp);
+                float[] frustumPlanes = extractFrustumPlanes(mvp);
+
+                // ── DISTANCE-SORTED DIRTY MESH REBUILD (pre-render pass) ──────────────
+                // Collect all visible dirty chunks, sort nearest-first, rebuild the
+                // closest ones.  This ensures player-adjacent chunks are always
+                // up-to-date even when many chunks are dirty at once (e.g. after water
+                // floods a large area).  Limit is raised to 6 because flat-array meshing
+                // is cheaper than the old jagged-array path.
+                if (!isPreloading) {
+                    int maxMeshCompilesPerFrame = 6;
+                    List<int[]> dirtyList = new ArrayList<>();
+                    for (int dx = -R; dx <= R; dx++) {
+                        for (int dz = -R; dz <= R; dz++) {
+                            for (int cy = 0; cy >= cyMin; cy--) {
+                                Chunk c = world.getChunk(playerCX + dx, cy, playerCZ + dz);
+                                if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
+                                    dirtyList.add(new int[]{dx, dz, dx * dx + dz * dz, cy});
+                                }
+                            }
+                        }
+                    }
+                    dirtyList.sort(Comparator.comparingInt(e -> e[2]));
+                    int compiled = 0;
+                    for (int[] e : dirtyList) {
+                        if (compiled >= maxMeshCompilesPerFrame) break;
+                        Chunk c = world.getChunk(playerCX + e[0], e[3], playerCZ + e[1]);
+                        if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
+                            world.buildChunkMeshes(c);
+                            compiled++;
+                        }
+                    }
+                }
 
                 // ── PASS 1: OPAQUE (Stone, Dirt, Grass, Sand) ──
-                // Render cy=0 (surface) first, then any deep abyss slabs.
                 for (int dx = -R; dx <= R; dx++) {
                     for (int dz = -R; dz <= R; dz++) {
                         // Iterate: cy=0 (surface) + any generated deep chunks
                         for (int cy = 0; cy >= cyMin; cy--) {
                             Chunk chunk = world.getChunk(playerCX + dx, cy, playerCZ + dz);
-                            if (chunk != null) {
-                                if ((chunk.dirty || chunk.opaqueMesh == null) && !isPreloading) {
-                                    if (meshCompilesThisFrame < maxMeshCompilesPerFrame) {
-                                        world.buildChunkMeshes(chunk);
-                                        meshCompilesThisFrame++;
-                                    }
-                                }
-                                if (chunk.opaqueMesh != null) {
-                                    Matrix4f mvp = new Matrix4f(projection).mul(view).mul(model);
-                                    shader.setUniform("mvp", mvp);
-                                    chunk.opaqueMesh.render();
-                                }
+                            if (chunk != null && chunk.opaqueMesh != null
+                                    && isAabbInFrustum(frustumPlanes, chunk)) {
+                                chunk.opaqueMesh.render();
                             }
                         }
                     }
@@ -435,9 +469,8 @@ public class Window {
                     for (int dz = -R; dz <= R; dz++) {
                         for (int cy = 0; cy >= cyMin; cy--) {
                             Chunk chunk = world.getChunk(playerCX + dx, cy, playerCZ + dz);
-                            if (chunk != null && chunk.transparentMesh != null) {
-                                Matrix4f mvp = new Matrix4f(projection).mul(view).mul(model);
-                                shader.setUniform("mvp", mvp);
+                            if (chunk != null && chunk.transparentMesh != null
+                                    && isAabbInFrustum(frustumPlanes, chunk)) {
                                 chunk.transparentMesh.render();
                             }
                         }
@@ -453,8 +486,8 @@ public class Window {
                     Matrix4f itemModel = new Matrix4f()
                             .translate(item.position.x, item.position.y + bob, item.position.z)
                             .rotateY(item.age * 1.5f);
-                    Matrix4f mvp = new Matrix4f(projection).mul(view).mul(itemModel);
-                    shader.setUniform("mvp", mvp);
+                    Matrix4f itemMvp = new Matrix4f(projection).mul(view).mul(itemModel);
+                    shader.setUniform("mvp", itemMvp);
                     itemMesh.render();
                 }
 
@@ -568,17 +601,13 @@ public class Window {
         ImGui.setNextWindowSize(320.0f, 130.0f);
         ImGui.begin("Pre-generating Terrain", imgui.flag.ImGuiWindowFlags.NoDecoration | imgui.flag.ImGuiWindowFlags.NoMove);
 
-        int halfCount = totalPreloadCount / 2;
-        if (currentPreloadProgress < halfCount) {
-            ImGui.text("Phase 1: Generating block data...");
-            ImGui.text(String.format("Progress: %d / %d chunks", currentPreloadProgress, halfCount));
-        } else {
-            ImGui.text("Phase 2: Compiling GPU meshes...");
-            ImGui.text(String.format("Progress: %d / %d chunks", currentPreloadProgress - halfCount, halfCount));
-        }
+        ImGui.text("Generating world in background...");
+        ImGui.text("Please wait a moment while the spawn");
+        ImGui.text("area finishes compiling...");
         ImGui.spacing();
 
-        float progress = (float) currentPreloadProgress / Math.max(1, totalPreloadCount);
+        // Loop a progress bar continuously to show active work
+        float progress = (float) (glfwGetTime() % 2.0) / 2.0f;
         ImGui.progressBar(progress, 300, 24);
 
         ImGui.end();
@@ -743,6 +772,8 @@ public class Window {
         if (breakProgress >= 1.0f) {
             droppedItems.add(new DroppedItem(tx, ty, tz, target));
             world.setBlock(tx, ty, tz, Block.AIR);
+            // Immediately rebuild so the broken block disappears at once
+            world.rebuildChunkAt(tx, ty, tz);
             if (network != null && network.connected) network.sendBreak(tx, ty, tz);
             breakProgress = 0.0f;
         }
@@ -751,6 +782,9 @@ public class Window {
     private void renderDebugMenu() {
         ImGui.begin("Debug");
         ImGui.text(String.format("XYZ: %.3f / %.3f / %.3f", player.position.x, player.position.y, player.position.z));
+        // Show live hardware performance data
+        ImGui.text(String.format("FPS: %.1f", ImGui.getIO().getFramerate()));
+        ImGui.text(String.format("Delta Time: %.4fs", ImGui.getIO().getDeltaTime()));
         ImGui.separator();
         float[] fov = { GameConfig.fov }; if (ImGui.sliderFloat("FOV", fov, 30f, 120f)) GameConfig.fov = fov[0];
         int[] rd = { GameConfig.renderDistance }; if (ImGui.sliderInt("Render Distance", rd, 2, 16)) GameConfig.renderDistance = rd[0];
@@ -812,5 +846,74 @@ public class Window {
             idx.add(b); idx.add(b+1); idx.add(b+2); idx.add(b+2); idx.add(b+3); idx.add(b);
             vIndex[0] += 4;
         }
+    }
+    // =========================================================================
+    // FRUSTUM CULLING MATH
+    // =========================================================================
+
+    /**
+     * Extracts the 6 clipping planes (Left, Right, Bottom, Top, Near, Far)
+     * from a View-Projection matrix. Returns an array of 24 floats (6 planes * 4 components).
+     */
+    private float[] extractFrustumPlanes(Matrix4f vp) {
+        float[] planes = new float[24];
+
+        // Left plane
+        planes[0]  = vp.m03() + vp.m00(); planes[1]  = vp.m13() + vp.m10();
+        planes[2]  = vp.m23() + vp.m20(); planes[3]  = vp.m33() + vp.m30();
+        // Right plane
+        planes[4]  = vp.m03() - vp.m00(); planes[5]  = vp.m13() - vp.m10();
+        planes[6]  = vp.m23() - vp.m20(); planes[7]  = vp.m33() - vp.m30();
+        // Bottom plane
+        planes[8]  = vp.m03() + vp.m01(); planes[9]  = vp.m13() + vp.m11();
+        planes[10] = vp.m23() + vp.m21(); planes[11] = vp.m33() + vp.m31();
+        // Top plane
+        planes[12] = vp.m03() - vp.m01(); planes[13] = vp.m13() - vp.m11();
+        planes[14] = vp.m23() - vp.m21(); planes[15] = vp.m33() - vp.m31();
+        // Near plane
+        planes[16] = vp.m03() + vp.m02(); planes[17] = vp.m13() + vp.m12();
+        planes[18] = vp.m23() + vp.m22(); planes[19] = vp.m33() + vp.m32();
+        // Far plane
+        planes[20] = vp.m03() - vp.m02(); planes[21] = vp.m13() - vp.m12();
+        planes[22] = vp.m23() - vp.m22(); planes[23] = vp.m33() - vp.m32();
+
+        // Normalize planes for accurate distance checks
+        for (int i = 0; i < 6; i++) {
+            float len = (float) Math.sqrt(planes[i*4] * planes[i*4] + planes[i*4+1] * planes[i*4+1] + planes[i*4+2] * planes[i*4+2]);
+            planes[i*4] /= len; planes[i*4+1] /= len; planes[i*4+2] /= len; planes[i*4+3] /= len;
+        }
+        return planes;
+    }
+
+    /**
+     * Checks if the chunk's tight, non-empty bounding box is inside the camera's view.
+     */
+    private boolean isAabbInFrustum(float[] planes, Chunk chunk) {
+        // If the chunk is completely empty, it has no size.
+        if (chunk.minBlockY > chunk.maxBlockY) return false;
+
+        float minX = chunk.cx * Chunk.SIZE;
+        float minZ = chunk.cz * Chunk.SIZE;
+        // Use the tight Y-bounds tracked when blocks were placed!
+        float minY = chunk.cy * Chunk.HEIGHT + chunk.minBlockY;
+
+        float maxX = minX + Chunk.SIZE;
+        float maxZ = minZ + Chunk.SIZE;
+        float maxY = chunk.cy * Chunk.HEIGHT + chunk.maxBlockY + 1; // +1 to cover the top of the highest block
+
+        // Test the AABB against all 6 planes
+        for (int i = 0; i < 6; i++) {
+            int p = i * 4;
+            // Find the point on the bounding box furthest in the direction of the plane's normal
+            float px = planes[p] > 0   ? maxX : minX;
+            float py = planes[p+1] > 0 ? maxY : minY;
+            float pz = planes[p+2] > 0 ? maxZ : minZ;
+
+            // If that furthest point is behind the plane, the ENTIRE box is outside the frustum
+            if (planes[p] * px + planes[p+1] * py + planes[p+2] * pz + planes[p+3] < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 }

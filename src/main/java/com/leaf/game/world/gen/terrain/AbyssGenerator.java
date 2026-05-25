@@ -109,18 +109,36 @@ public class AbyssGenerator {
     // =========================================================================
 
     /**
-     * HOOK ① — O(1) column cull using squared distance.
-     * Returns false for any column guaranteed outside the shaft at every depth.
-     * Eliminates all abyss work for the vast majority of the world.
+     * HOOK ① — O(1) column cull using squared distance (surface / cy=0 version).
+     * For deep chunks use {@link #isInOuterZoneForDepth} — the shaft widens with
+     * depth so the maxR must account for the actual chunk offset.
      */
     public boolean isInOuterZone(int wx, int wz) {
-        float dx   = wx - AbyssConfig.centerX;
-        float dz   = wz - AbyssConfig.centerZ;
-        // maxR accounts for entrance radius + max taper at y=0 + all noise amplitudes
+        return isInOuterZoneForDepth(wx, wz, 0);
+    }
+
+    /**
+     * Depth-aware outer zone cull — MUST be used for deep abyss chunks (cy < 0).
+     *
+     * Bug that caused the ~-500 ceiling: isInOuterZone used a maxR calibrated for
+     * the surface (depth ≈ 235 blocks). At worldY = -512 the shaft base widens to
+     * 88 + 747*0.05 = 125, and with noise it reaches ~165 — wider than the old
+     * maxR of ~141. Columns at r=150 were inside the shaft but failed the cull,
+     * leaving solid stone inside it and creating an invisible floor.
+     *
+     * @param worldYOffset  chunk.cy * Chunk.HEIGHT (0 for surface, negative for deep)
+     */
+    public boolean isInOuterZoneForDepth(int wx, int wz, int worldYOffset) {
+        float dx = wx - AbyssConfig.centerX;
+        float dz = wz - AbyssConfig.centerZ;
+        // Worst-case wall radius: use the deepest point of the chunk (local y = 0).
+        float deepestWorldY = worldYOffset;
+        float maxDepth = Math.max(0f, AbyssConfig.entranceY - deepestWorldY);
         float maxR = AbyssConfig.entranceRadius
-                + AbyssConfig.entranceY * AbyssConfig.taperRate
-                + AbyssConfig.maxWallVariation;
-        return (dx * dx + dz * dz) < (maxR * maxR);  // no sqrt needed
+                   + maxDepth * AbyssConfig.taperRate
+                   + AbyssConfig.maxWallVariation
+                   + 30f;   // extra margin for bell-mouth flare above entrance
+        return (dx * dx + dz * dz) < (maxR * maxR);
     }
 
     /** HOOK ① — Precompute column constants after isInOuterZone() returns true. */

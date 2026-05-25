@@ -5,16 +5,46 @@ import com.leaf.game.world.Block;
 import com.leaf.game.world.Chunk;
 import com.leaf.game.world.World;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
 
 public class ChunkMesher {
 
     private static final float AO_STRENGTH = 0.2f;
 
+    // ── Primitive growable buffers ─────────────────────────────────────────────
+    // These are reused across every buildChunkMeshes call (main thread only).
+    // Eliminates millions of Float/Integer autobox allocations per second.
+    private static final class GrowableFloats {
+        float[] buf;
+        int size;
+        GrowableFloats(int cap) { buf = new float[cap]; }
+        void add(float v) {
+            if (size == buf.length) buf = Arrays.copyOf(buf, buf.length * 2);
+            buf[size++] = v;
+        }
+        void clear() { size = 0; }
+        int vertexCount() { return size / 10; } // 10 floats per vertex
+    }
+    private static final class GrowableInts {
+        int[] buf;
+        int size;
+        GrowableInts(int cap) { buf = new int[cap]; }
+        void add(int v) {
+            if (size == buf.length) buf = Arrays.copyOf(buf, buf.length * 2);
+            buf[size++] = v;
+        }
+        void clear() { size = 0; }
+    }
+
+    // Static reusable instances — safe because mesh building is single-threaded
+    private static final GrowableFloats oVertsBuf = new GrowableFloats(65536);
+    private static final GrowableInts   oIdxBuf   = new GrowableInts(32768);
+    private static final GrowableFloats tVertsBuf = new GrowableFloats(16384);
+    private static final GrowableInts   tIdxBuf   = new GrowableInts(8192);
+
     public static void buildChunkMeshes(World world, Chunk chunk) {
-        List<Float> oVerts = new ArrayList<>(), tVerts = new ArrayList<>();
-        List<Integer> oIdx = new ArrayList<>(), tIdx = new ArrayList<>();
+        oVertsBuf.clear(); oIdxBuf.clear();
+        tVertsBuf.clear(); tIdxBuf.clear();
 
         int worldXStart = chunk.cx * Chunk.SIZE;
         int worldZStart = chunk.cz * Chunk.SIZE;
@@ -77,8 +107,22 @@ public class ChunkMesher {
         }
 
         // ── 2. MESH GENERATION LOOP ──
+        // Clamp Y to the tight bounds tracked in Chunk.setBlock. For typical
+        // surface chunks (terrain up to ~Y=150 out of 512) this eliminates
+        // ~70 % of inner-loop iterations. Deep solid abyss chunks still run
+        // the full range but those are infrequent. +/- 1 padding ensures we
+        // don't miss faces right at the boundary.
+        int yMin = Math.max(0,              chunk.minBlockY - 1);
+        int yMax = Math.min(Chunk.HEIGHT-1, chunk.maxBlockY + 1);
+        // If the chunk is completely empty (minBlockY > maxBlockY) skip entirely
+        if (chunk.minBlockY > chunk.maxBlockY) {
+            if (chunk.opaqueMesh      != null) { chunk.opaqueMesh.cleanup();      chunk.opaqueMesh = null; }
+            if (chunk.transparentMesh != null) { chunk.transparentMesh.cleanup(); chunk.transparentMesh = null; }
+            chunk.dirty = false;
+            return;
+        }
         for (int x = 0; x < Chunk.SIZE;  x++) {
-            for (int y = 0; y < Chunk.HEIGHT; y++) {
+            for (int y = yMin; y <= yMax; y++) {
                 for (int z = 0; z < Chunk.SIZE;  z++) {
 
                     int cx = x + 1; // offset for the padded caches
@@ -95,8 +139,8 @@ public class ChunkMesher {
                     float wy = worldYStart + y;
 
                     boolean isTrans = !block.isOpaque();
-                    List<Float> verts = isTrans ? tVerts : oVerts;
-                    List<Integer> indices = isTrans ? tIdx : oIdx;
+                    GrowableFloats verts   = isTrans ? tVertsBuf : oVertsBuf;
+                    GrowableInts   indices = isTrans ? tIdxBuf   : oIdxBuf;
 
                     // Compute sloped liquid bounds
                     float h00 = block.isLiquid() ? getLiquidCornerHeight(blockCache, metaCache, x, y, z, 0, 0) : 1f;
@@ -171,8 +215,8 @@ public class ChunkMesher {
 
         if (chunk.opaqueMesh != null) chunk.opaqueMesh.cleanup();
         if (chunk.transparentMesh != null) chunk.transparentMesh.cleanup();
-        chunk.opaqueMesh = buildMesh(oVerts, oIdx);
-        chunk.transparentMesh = buildMesh(tVerts, tIdx);
+        chunk.opaqueMesh = buildMesh(oVertsBuf, oIdxBuf);
+        chunk.transparentMesh = buildMesh(tVertsBuf, tIdxBuf);
         chunk.dirty = false;
 
         // Neighbor mesh update triggers (horizontal + vertical)
@@ -246,24 +290,33 @@ public class ChunkMesher {
         return 1.0f - ((s1 ? 1 : 0) + (s2 ? 1 : 0) + (co ? 1 : 0)) * AO_STRENGTH;
     }
 
-    private static Mesh buildMesh(List<Float> verts, List<Integer> indices) {
-        if (verts.isEmpty()) return null;
-        float[] vArr = new float[verts.size()]; for (int i = 0; i < verts.size(); i++) vArr[i] = verts.get(i);
-        int[] iArr = new int[indices.size()]; for (int i = 0; i < indices.size(); i++) iArr[i] = indices.get(i);
-        return new Mesh(vArr, iArr);
+    private static Mesh buildMesh(GrowableFloats verts, GrowableInts indices) {
+        if (verts.size == 0) return null;
+        // Pass slices of the backing arrays — Mesh constructor copies what it needs
+        return new Mesh(Arrays.copyOf(verts.buf, verts.size),
+                        Arrays.copyOf(indices.buf, indices.size));
     }
 
-    private static void addFace(List<Float> verts, List<Integer> indices, float[] faceVertices, Block block, float[] ao, float nx, float ny, float nz) {
-        int baseIndex = verts.size() / 10;
+    private static void addFace(GrowableFloats verts, GrowableInts indices,
+                                 float[] faceVertices, Block block, float[] ao,
+                                 float nx, float ny, float nz) {
+        int baseIndex = verts.vertexCount();
         for (int i = 0; i < 4; i++) {
-            verts.add(faceVertices[i * 3]); verts.add(faceVertices[i * 3 + 1]); verts.add(faceVertices[i * 3 + 2]);
-            verts.add(block.r * ao[i]); verts.add(block.g * ao[i]); verts.add(block.b * ao[i]); verts.add(block.a);
+            verts.add(faceVertices[i * 3]);
+            verts.add(faceVertices[i * 3 + 1]);
+            verts.add(faceVertices[i * 3 + 2]);
+            verts.add(block.r * ao[i]);
+            verts.add(block.g * ao[i]);
+            verts.add(block.b * ao[i]);
+            verts.add(block.a);
             verts.add(nx); verts.add(ny); verts.add(nz);
         }
         if (ao[0] + ao[2] > ao[1] + ao[3]) {
-            indices.add(baseIndex); indices.add(baseIndex + 1); indices.add(baseIndex + 2); indices.add(baseIndex + 2); indices.add(baseIndex + 3); indices.add(baseIndex);
+            indices.add(baseIndex);     indices.add(baseIndex + 1); indices.add(baseIndex + 2);
+            indices.add(baseIndex + 2); indices.add(baseIndex + 3); indices.add(baseIndex);
         } else {
-            indices.add(baseIndex); indices.add(baseIndex + 1); indices.add(baseIndex + 3); indices.add(baseIndex + 1); indices.add(baseIndex + 2); indices.add(baseIndex + 3);
+            indices.add(baseIndex);     indices.add(baseIndex + 1); indices.add(baseIndex + 3);
+            indices.add(baseIndex + 1); indices.add(baseIndex + 2); indices.add(baseIndex + 3);
         }
     }
 }

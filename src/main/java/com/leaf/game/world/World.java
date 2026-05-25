@@ -4,25 +4,39 @@ package com.leaf.game.world;
 import com.leaf.game.entity.Player;
 import com.leaf.game.core.GameConfig;
 import com.leaf.game.world.gen.WorldGen;
+import com.leaf.game.world.gen.terrain.AbyssConfig;
 import com.leaf.game.render.ChunkMesher;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class World {
     public static final int WIDTH  = 128;
     public static final int HEIGHT = 512;
     public static final int DEPTH  = 128;
 
-    private final HashMap<Long, Chunk> chunks = new HashMap<>();
-    private final Map<Long, Map<Integer, Block>> modifiedBlocks = new HashMap<>();
+    private final ConcurrentHashMap<Long, Chunk> chunks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Map<Integer, Block>> modifiedBlocks = new ConcurrentHashMap<>();
 
     private final Set<Long> activeLiquids = ConcurrentHashMap.newKeySet();
     private float fluidTimer = 0.0f;
+
+    // ── FIX 1: Active Queue Throttle ─────────────────────────────────────────
+    // Caps simultaneous background generation tasks. At RD=12 there can be
+    // 500+ eligible chunks per frame; without this limit, the thread-pool queue
+    // balloons, the JVM heap saturates, and GC thrashing freezes the game.
+    private static final int MAX_CONCURRENT_GENERATIONS = 12;
+    private final AtomicInteger activeGenerations = new AtomicInteger(0);
 
     public World() {}
 
@@ -30,14 +44,20 @@ public class World {
 
     // ── Chunk key encoding ────────────────────────────────────────────────────
     // 3D key: 21 bits each for cx, cy, cz — handles ±1M chunks per axis.
-    // worldY of any block = chunk.cy * Chunk.HEIGHT + localY.
     private static long chunkKey(int cx, int cy, int cz) {
         return ((long)(cx & 0x1FFFFF) << 42)
-             | ((long)(cy & 0x1FFFFF) << 21)
-             |  (long)(cz & 0x1FFFFF);
+                | ((long)(cy & 0x1FFFFF) << 21)
+                |  (long)(cz & 0x1FFFFF);
     }
     // 2D surface key kept for modifiedBlocks (player edits are surface-only)
     private static long chunkKey2D(int cx, int cz) { return ((long) cx << 32) | (cz & 0xFFFFFFFFL); }
+
+    // Background threads for heavy math
+    private final ExecutorService chunkThreadPool =
+            Executors.newFixedThreadPool(Math.max(2, Runtime.getRuntime().availableProcessors() - 1));
+
+    // Safe queue to hand chunks back to the main thread for OpenGL rendering
+    public final ConcurrentLinkedQueue<Chunk> meshingQueue = new ConcurrentLinkedQueue<>();
 
     // ── 3D chunk access ───────────────────────────────────────────────────────
     public Chunk getChunk(int cx, int cy, int cz) { return chunks.get(chunkKey(cx, cy, cz)); }
@@ -108,83 +128,175 @@ public class World {
         // Which vertical chunk-slab the player is currently in
         int playerCY = Math.floorDiv((int) player.position.y, Chunk.HEIGHT);
 
+        // ── FIX 2: Smart Abyss Culling — precompute player's proximity to abyss ──
+        // We only need deep chunks if the player is both horizontally near the
+        // abyss shaft AND has descended far enough to actually see them.  When
+        // the player is on the surface, the fragment shader's abyss fog hides
+        // everything below y≈(playerY - 80) in impenetrable darkness, so there
+        // is no visual benefit to generating cy<0 slabs hundreds of blocks away.
+        float dxAbyss = player.position.x - AbyssConfig.centerX;
+        float dzAbyss = player.position.z - AbyssConfig.centerZ;
+        float horizDistToAbyss = (float) Math.sqrt(dxAbyss * dxAbyss + dzAbyss * dzAbyss);
+        // Allow the full render-distance ring around the shaft entrance plus a
+        // small buffer for near-edge columns.
+        float abyssHorizThreshold = AbyssConfig.entranceRadius
+                + RENDER_DISTANCE * Chunk.SIZE
+                + 32f;
+        boolean playerNearAbyssHoriz = horizDistToAbyss < abyssHorizThreshold;
+        // Player must be meaningfully below the entrance before we start
+        // generating deep slabs.  50 blocks below entrance ≈ clearly inside.
+        boolean playerDescended = player.position.y < (AbyssConfig.entranceY - 50);
+
+        // ── Load loop — sorted nearest-first ─────────────────────────────────
+        // Collect all (dx,dz) offsets, sort by squared distance from player,
+        // then submit generation requests closest-first.  This guarantees that
+        // the limited MAX_CONCURRENT_GENERATIONS slots are always given to the
+        // chunks the player can actually see rather than chunks on the far edge
+        // of the render ring — eliminating the "empty terrain holes nearby while
+        // distant chunks load" symptom.
+        int totalDiameter = 2 * RENDER_DISTANCE + 1;
+        List<int[]> columnOffsets = new ArrayList<>(totalDiameter * totalDiameter);
         for (int dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
             for (int dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-                int cx = playerCX + dx;
-                int cz = playerCZ + dz;
+                columnOffsets.add(new int[]{dx, dz, dx * dx + dz * dz});
+            }
+        }
+        columnOffsets.sort(Comparator.comparingInt(e -> e[2]));
 
-                // Always load the surface chunk (cy=0)
-                loadChunkIfNeeded(world, gen, cx, 0, cz);
+        for (int[] col : columnOffsets) {
+            int dx = col[0], dz = col[1];
+            int cx = playerCX + dx;
+            int cz = playerCZ + dz;
 
-                // For columns that overlap the Abyss zone, also generate the deep
-                // chunks below.  We load two chunk-heights ahead of the player so
-                // the shaft is always ready before they arrive.
-                if (gen.isChunkInAbyssZone(cx, cz)) {
-                    int deepestNeeded = Math.min(playerCY - 2, -1);  // always at least -1
-                    for (int cy = -1; cy >= deepestNeeded; cy--) {
-                        loadChunkIfNeeded(world, gen, cx, cy, cz);
-                    }
+            // Always load the surface chunk (cy=0)
+            loadChunkIfNeeded(world, gen, cx, 0, cz);
+
+            // ── Smart deep-abyss loading ──────────────────────────────────────
+            if (gen.isChunkInAbyssZone(cx, cz)
+                    && playerNearAbyssHoriz
+                    && playerDescended) {
+
+                int deepestCY = Math.max(playerCY - 3, -5);
+                for (int cy = -1; cy >= deepestCY; cy--) {
+                    loadChunkIfNeeded(world, gen, cx, cy, cz);
                 }
+            }
+        }
+
+        // ── FIX 3: Dynamic Chunk Unloading ────────────────────────────────────
+        // Evict fully-meshed chunks that have drifted outside the keep radius.
+        // • Only evict MESHED chunks — GENERATING chunks are live on a background
+        //   thread and must not be touched; BLOCKS_READY chunks are queued for
+        //   meshing on this same frame and will be caught next sweep.
+        // • modifiedBlocks is already up-to-date (every setBlock call writes to
+        //   it in real time), so no extra save step is required here.
+        // • Mesh cleanup calls glDelete* — safe because updateChunks runs on the
+        //   main OpenGL thread.
+        int keepRadius = RENDER_DISTANCE + 2;
+        // Deep chunks need an extra vertical margin so fast descents don't pop.
+        int keepRadiusY = keepRadius + 3;
+
+        Iterator<Map.Entry<Long, Chunk>> iter = chunks.entrySet().iterator();
+        while (iter.hasNext()) {
+            Map.Entry<Long, Chunk> entry = iter.next();
+            Chunk c = entry.getValue();
+
+            // Never evict a chunk that is still being generated — the background
+            // thread holds a reference and will write to it after this point.
+            if (c.state == Chunk.ChunkState.GENERATING) continue;
+
+            // Check Manhattan distance per axis.
+            boolean outsideX = Math.abs(c.cx - playerCX) > keepRadius;
+            boolean outsideZ = Math.abs(c.cz - playerCZ) > keepRadius;
+            boolean outsideY = Math.abs(c.cy - playerCY) > keepRadiusY;
+
+            if (outsideX || outsideZ || outsideY) {
+                // Release GPU memory for mesh buffers.
+                c.cleanup();
+                iter.remove();
             }
         }
     }
 
     /**
      * Generates and initialises a chunk at (cx, cy, cz) if it does not yet exist.
-     * Applies any saved player-block modifications (surface chunks only),
-     * schedules water updates, and marks horizontal + vertical neighbours dirty.
+     *
+     * <p>FIX 1 — Rate limiting: if {@value MAX_CONCURRENT_GENERATIONS} generation
+     * tasks are already in-flight, the chunk is left in the EMPTY state and
+     * will be retried on the next {@code updateChunks()} call. This prevents
+     * the thread-pool queue from filling with hundreds of tasks in one frame,
+     * which previously caused memory explosion and GC thrashing at high render
+     * distances.
      */
     private void loadChunkIfNeeded(World world, WorldGen gen, int cx, int cy, int cz) {
-        if (world.getChunk(cx, cy, cz) != null) return;
+        long key = chunkKey(cx, cy, cz);
+        Chunk chunk = getOrCreateChunk(cx, cy, cz);
 
-        Chunk chunk = world.getOrCreateChunk(cx, cy, cz);
-        gen.generateChunk(chunk);
+        // Ensure we only submit EMPTY chunks to the thread pool.
+        synchronized (chunk) {
+            if (chunk.state != Chunk.ChunkState.EMPTY) return;
 
-        // Restore player-placed block edits (only tracked for cy=0)
-        if (cy == 0) {
-            Map<Integer, Block> mods = modifiedBlocks.get(chunkKey2D(cx, cz));
-            if (mods != null) {
-                for (Map.Entry<Integer, Block> entry : mods.entrySet()) {
-                    int idx = entry.getKey();
-                    chunk.setBlock(idx & 15, (idx >> 8) & 1023, (idx >> 4) & 15, entry.getValue());
-                }
+            // ── FIX 1: Throttle check ────────────────────────────────────────
+            // Check INSIDE the synchronized block so the state cannot be
+            // changed to GENERATING by two callers simultaneously.
+            if (activeGenerations.get() >= MAX_CONCURRENT_GENERATIONS) {
+                // Chunk stays EMPTY — updateChunks will retry next frame.
+                return;
             }
 
-            // Schedule fluid updates for exposed water (surface world only)
-            int worldX = cx * Chunk.SIZE;
-            int worldZ = cz * Chunk.SIZE;
-            for (int lx = 0; lx < Chunk.SIZE; lx++) {
-                for (int ly = 0; ly < Chunk.HEIGHT; ly++) {
-                    for (int lz = 0; lz < Chunk.SIZE; lz++) {
-                        if (chunk.getBlock(lx, ly, lz) == Block.WATER) {
-                            boolean exposed = false;
-                            if (lx == 0 || lx == Chunk.SIZE - 1 || lz == 0 || lz == Chunk.SIZE - 1) {
-                                exposed = true;
-                            } else if (chunk.getBlock(lx+1, ly, lz) == Block.AIR ||
-                                    chunk.getBlock(lx-1, ly, lz) == Block.AIR ||
-                                    chunk.getBlock(lx, ly, lz+1) == Block.AIR ||
-                                    chunk.getBlock(lx, ly, lz-1) == Block.AIR ||
-                                    (ly > 0 && chunk.getBlock(lx, ly-1, lz) == Block.AIR)) {
-                                exposed = true;
+            chunk.state = Chunk.ChunkState.GENERATING;
+            activeGenerations.incrementAndGet();
+        }
+
+        chunkThreadPool.submit(() -> {
+            try {
+                gen.generateChunk(chunk); // Heavy 3D math runs in background!
+
+                // Restore player-placed block edits (only tracked for cy=0)
+                if (cy == 0) {
+                    Map<Integer, Block> mods = modifiedBlocks.get(chunkKey2D(cx, cz));
+                    if (mods != null) {
+                        for (Map.Entry<Integer, Block> entry : mods.entrySet()) {
+                            int idx = entry.getKey();
+                            chunk.setBlock(idx & 15, (idx >> 8) & 1023, (idx >> 4) & 15, entry.getValue());
+                        }
+                    }
+
+                    // Schedule fluid updates for exposed water
+                    int worldX = cx * Chunk.SIZE;
+                    int worldZ = cz * Chunk.SIZE;
+                    for (int lx = 0; lx < Chunk.SIZE; lx++) {
+                        for (int ly = 0; ly < Chunk.HEIGHT; ly++) {
+                            for (int lz = 0; lz < Chunk.SIZE; lz++) {
+                                if (chunk.getBlock(lx, ly, lz) == Block.WATER) {
+                                    boolean exposed = (lx == 0 || lx == Chunk.SIZE - 1
+                                            || lz == 0 || lz == Chunk.SIZE - 1)
+                                            || chunk.getBlock(lx+1, ly, lz) == Block.AIR
+                                            || chunk.getBlock(lx-1, ly, lz) == Block.AIR
+                                            || chunk.getBlock(lx, ly, lz+1) == Block.AIR
+                                            || chunk.getBlock(lx, ly, lz-1) == Block.AIR
+                                            || (ly > 0 && chunk.getBlock(lx, ly-1, lz) == Block.AIR);
+                                    if (exposed) world.scheduleFluidUpdate(worldX + lx, ly, worldZ + lz);
+                                }
                             }
-                            if (exposed) world.scheduleFluidUpdate(worldX + lx, ly, worldZ + lz);
                         }
                     }
                 }
-            }
-        }
 
-        // Mark horizontal and vertical neighbours dirty so their meshes update
-        Chunk nX = world.getChunk(cx + 1, cy, cz); if (nX != null) nX.dirty = true;
-        Chunk pX = world.getChunk(cx - 1, cy, cz); if (pX != null) pX.dirty = true;
-        Chunk nZ = world.getChunk(cx, cy, cz + 1); if (nZ != null) nZ.dirty = true;
-        Chunk pZ = world.getChunk(cx, cy, cz - 1); if (pZ != null) pZ.dirty = true;
-        Chunk uY = world.getChunk(cx, cy + 1, cz); if (uY != null) uY.dirty = true;
-        Chunk dY = world.getChunk(cx, cy - 1, cz); if (dY != null) dY.dirty = true;
+                chunk.state = Chunk.ChunkState.BLOCKS_READY;
+                meshingQueue.add(chunk); // Hand back to main thread
+            } finally {
+                // Always decrement — even if generateChunk throws — so a
+                // crashed task never permanently clogs the slot counter.
+                activeGenerations.decrementAndGet();
+            }
+        });
     }
 
     public void scheduleFluidUpdate(int wx, int wy, int wz) {
-        if (wy >= 0 && wy < Chunk.HEIGHT) activeLiquids.add(packPos(wx, wy, wz));
+        // Accept any Y in range [-16*512 .. 4*512] — the same safety bounds used
+        // by setBlockWithMeta.  Negative Y is needed for deep abyss water.
+        activeLiquids.add(packPos(wx, wy, wz));
     }
 
     public void tickLiquids(float deltaTime) {
@@ -253,10 +365,56 @@ public class World {
         ChunkMesher.buildChunkMeshes(this, chunk);
     }
 
-    private long packPos(int x, int y, int z) {
-        return ((long)(x & 0x3FFFFFF) << 38) | ((long)(z & 0x3FFFFFF) << 12) | (y & 0xFFF);
+    /**
+     * Immediately rebuilds the mesh for the chunk containing world position
+     * (wx, wy, wz) and marks it MESHED.  Also rebuilds any MESHED horizontal
+     * neighbours whose boundary faces may have changed (e.g. the side of the
+     * newly placed block that faces into the next chunk).
+     *
+     * <p>Must be called from the main OpenGL thread (same as buildChunkMeshes).
+     * Use this after player-triggered block edits so the visual update is
+     * instantaneous rather than waiting for the next dirty-flag scan.
+     */
+    public void rebuildChunkAt(int wx, int wy, int wz) {
+        int cy = Math.floorDiv(wy, Chunk.HEIGHT);
+        int cx = Math.floorDiv(wx, Chunk.SIZE);
+        int cz = Math.floorDiv(wz, Chunk.SIZE);
+
+        Chunk main = getChunk(cx, cy, cz);
+        if (main != null && main.state == Chunk.ChunkState.MESHED) {
+            buildChunkMeshes(main);
+        }
+
+        // Rebuild neighbours only if the edit was on a chunk border (within 1 block of edge)
+        int lx = Math.floorMod(wx, Chunk.SIZE);
+        int lz = Math.floorMod(wz, Chunk.SIZE);
+        if (lx == 0)             { Chunk n = getChunk(cx - 1, cy, cz); if (n != null && n.state == Chunk.ChunkState.MESHED) buildChunkMeshes(n); }
+        if (lx == Chunk.SIZE - 1) { Chunk n = getChunk(cx + 1, cy, cz); if (n != null && n.state == Chunk.ChunkState.MESHED) buildChunkMeshes(n); }
+        if (lz == 0)             { Chunk n = getChunk(cx, cy, cz - 1); if (n != null && n.state == Chunk.ChunkState.MESHED) buildChunkMeshes(n); }
+        if (lz == Chunk.SIZE - 1) { Chunk n = getChunk(cx, cy, cz + 1); if (n != null && n.state == Chunk.ChunkState.MESHED) buildChunkMeshes(n); }
     }
-    private int unpackX(long p) { return (int) (p >> 38); }
-    private int unpackZ(long p) { return (int) ((p << 26) >> 38); }
-    private int unpackY(long p) { return (int) (p & 0xFFF); }
+
+    // ── Position packing for the fluid scheduler ─────────────────────────────
+    // 64-bit layout:
+    //   bits 63..39 (25 bits) — X biased by 2^24  → range [-16 777 216, 16 777 215]
+    //   bits 38..14 (25 bits) — Z biased by 2^24  → same range
+    //   bits 13..0  (14 bits) — Y biased by 2^13  → range [−8 192, 8 191]
+    //                                                (covers cy −16 … +16)
+    //
+    // Bias makes every field unsigned before packing, so no sign-extension
+    // surprises on unpack. This replaces the original scheme that silently
+    // dropped negative-Y (abyss) and mis-handled negative-X/Z coordinates.
+    private static final int X_BIAS = 1 << 24;  // half of 25-bit unsigned range
+    private static final int Z_BIAS = 1 << 24;
+    private static final int Y_BIAS = 1 << 13;  // half of 14-bit unsigned range
+
+    private long packPos(int x, int y, int z) {
+        long px = (long)((x + X_BIAS) & 0x1FFFFFF);  // 25 bits
+        long pz = (long)((z + Z_BIAS) & 0x1FFFFFF);  // 25 bits
+        long py = (long)((y + Y_BIAS) & 0x3FFF);     // 14 bits
+        return (px << 39) | (pz << 14) | py;
+    }
+    private int unpackX(long p) { return (int)((p >>> 39) & 0x1FFFFFF) - X_BIAS; }
+    private int unpackZ(long p) { return (int)((p >>> 14) & 0x1FFFFFF) - Z_BIAS; }
+    private int unpackY(long p) { return (int)(p & 0x3FFF)  - Y_BIAS; }
 }

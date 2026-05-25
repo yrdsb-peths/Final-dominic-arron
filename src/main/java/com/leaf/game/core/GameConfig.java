@@ -1,7 +1,7 @@
 package com.leaf.game.core;
 
 public class GameConfig {
-    public static long  seed           = 12563L;
+    public static long  seed           = 242827497248972498L;
     public static int   renderDistance = 6;
     //public static int   seaLevel       = 20;
 
@@ -17,7 +17,7 @@ public class GameConfig {
     public static int   beachMaxAltitude  = 2;
     public static int   snowAltitude      = 310;   // was 48 — rescaled
     public static float coldTempThreshold = -0.25f;
-    public static int   mountainSnowAltitude = 350; // for BlockCladder
+    public static int   mountainSnowAltitude = 120; // for BlockCladder
 
     // Lower frequency = larger continents. Gives mountains room to form!
     public static float contFreq    = 0.001f;
