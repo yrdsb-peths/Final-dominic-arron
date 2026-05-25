@@ -271,6 +271,7 @@ public class Window {
                 // ── 1. ASYNC MESH DRAINER ──
                 // Process finished chunks from the background threads.
                 // Do more per frame if we are on the loading screen to speed it up.
+                // ── 1. ASYNC MESH DRAINER ──
                 int maxMeshesPerFrame = isPreloading ? 12 : 3;
                 int meshedThisFrame = 0;
                 Chunk readyChunk;
@@ -289,13 +290,10 @@ public class Window {
 
                 if (!isTerrainReady) {
                     isPreloading = true;
-                    // Freeze player in mid-air while waiting for threads!
-                    player.position.y = 250.0f;
-                    // CRITICAL FIX: Push initial chunks to background threads
-                    world.updateChunks(world, worldGen, player);
+                    player.position.y = 250.0f; // Freeze player in mid-air
+                    world.updateChunks(world, worldGen, player); // Push tasks to background threads
                 } else {
                     if (isPreloading) {
-                        // Terrain is ready! Do the safe landing and turn off loading screen
                         isPreloading = false;
                         int spawnX = (int)Math.floor(player.position.x);
                         int spawnZ = (int)Math.floor(player.position.z);
@@ -308,7 +306,6 @@ public class Window {
                         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
                     }
 
-                    // Normal physics
                     if (!showChat && !showDebug && !showNoiseViewer && !isPaused) {
                         player.update(window, camera, world, deltaTime);
                         updateBreaking(deltaTime);

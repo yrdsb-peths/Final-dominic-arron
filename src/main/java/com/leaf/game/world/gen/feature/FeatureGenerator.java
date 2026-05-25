@@ -227,12 +227,6 @@ public class FeatureGenerator {
                                 chunk.setBlock(lx, ry, lz, Block.HANGING_ROOT);
                             }
                         }
-
-                        // Waterfall sources at exposed outer edge (~12 % of columns)
-                        if (dist > radius * 0.72f) {
-                            long wfRng = regionHash(seed, worldX + lx, worldZ + lz, 88);
-                            if ((wfRng & 0x7L) == 0L) setY(chunk, lx, topY + 1, lz, Block.WATER);
-                        }
                     }
                 }
             }
