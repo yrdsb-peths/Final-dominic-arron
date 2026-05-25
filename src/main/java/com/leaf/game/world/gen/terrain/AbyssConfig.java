@@ -3,8 +3,8 @@ package com.leaf.game.world.gen.terrain;
 public class AbyssConfig {
 
     // ── LOCATION ─────────────────────────────────────────────────────────────
-    public static int   centerX        = 1000;
-    public static int   centerZ        = 1000;
+    public static int   centerX        = 2000;
+    public static int   centerZ        = 2000;
 
     // ── ENTRANCE ─────────────────────────────────────────────────────────────
     public static float entranceRadius = 88f;

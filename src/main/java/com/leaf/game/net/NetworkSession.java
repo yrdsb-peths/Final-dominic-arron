@@ -20,10 +20,12 @@ public class NetworkSession {
     public volatile boolean seedReceived = false;
     public volatile long    newSeed = 0;
 
-    private final Queue<int[]>  incomingBreaks = new ConcurrentLinkedQueue<>();
-    private final Queue<int[]>  incomingPlaces = new ConcurrentLinkedQueue<>();
-    private final Queue<String> incomingChats  = new ConcurrentLinkedQueue<>();
+    private final Queue<int[]>  incomingBreaks  = new ConcurrentLinkedQueue<>();
+    private final Queue<int[]>  incomingPlaces  = new ConcurrentLinkedQueue<>();
+    private final Queue<String> incomingChats   = new ConcurrentLinkedQueue<>();
     private final Queue<int[]>  incomingPickups = new ConcurrentLinkedQueue<>();
+    /** Incoming crater events: int[]{x, y, z, radius} */
+    private final Queue<int[]>  incomingCraters = new ConcurrentLinkedQueue<>();
 
     private final boolean isHost;
     private final String  hostIp;
@@ -120,21 +122,36 @@ public class NetworkSession {
                         Integer.parseInt(p[2])
                 });
             } catch (Exception ignored) {}
+        } else if (line.startsWith("CRATER:")) {
+            // Format: CRATER:x,y,z,r
+            String[] p = line.substring(7).split(",");
+            try {
+                incomingCraters.add(new int[]{
+                        Integer.parseInt(p[0]),
+                        Integer.parseInt(p[1]),
+                        Integer.parseInt(p[2]),
+                        Integer.parseInt(p[3])
+                });
+            } catch (Exception ignored) {}
         }
-    } // <── This single bracket now correctly closes the handleIncoming method at the very end!
+    } // <── closes handleIncoming
 
     public void sendPosition(float x, float y, float z, float yaw, float pitch) { send("POS:" + x + "," + y + "," + z + "," + yaw + "," + pitch); }
-    public void sendBreak(int x, int y, int z) { send("BREAK:" + x + "," + y + "," + z); }
-    public void sendPlace(int x, int y, int z, Block block) { send("PLACE:" + x + "," + y + "," + z + "," + block.ordinal()); }
-    public void sendChat(String message) { send("CHAT:" + message); }
+    public void sendBreak(int x, int y, int z)                                  { send("BREAK:" + x + "," + y + "," + z); }
+    public void sendPlace(int x, int y, int z, Block block)                     { send("PLACE:" + x + "," + y + "," + z + "," + block.ordinal()); }
+    public void sendChat(String message)                                         { send("CHAT:" + message); }
+    public void sendPickup(int x, int y, int z)                                 { send("PICKUP:" + x + "," + y + "," + z); }
+    /** Broadcast a smash crater to the remote peer. */
+    public void sendCrater(int x, int y, int z, int radius)                     { send("CRATER:" + x + "," + y + "," + z + "," + radius); }
 
     private void send(String message) {
         synchronized (writeLock) { if (out != null) out.println(message); }
     }
 
-    public int[] pollBreak() { return incomingBreaks.poll(); }
-    public int[] pollPlace() { return incomingPlaces.poll(); }
-    public String pollChat() { return incomingChats.poll(); }
-    public void sendPickup(int x, int y, int z) { send("PICKUP:" + x + "," + y + "," + z); }
-    public int[] pollPickup() { return incomingPickups.poll(); }
+    public int[]   pollBreak()   { return incomingBreaks.poll(); }
+    public int[]   pollPlace()   { return incomingPlaces.poll(); }
+    public String  pollChat()    { return incomingChats.poll(); }
+    public int[]   pollPickup()  { return incomingPickups.poll(); }
+    /** Returns {x, y, z, radius} of the next incoming crater, or null. */
+    public int[]   pollCrater()  { return incomingCraters.poll(); }
 }

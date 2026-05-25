@@ -6,6 +6,7 @@ import com.leaf.game.core.GameConfig;
 import com.leaf.game.world.Block;
 import com.leaf.game.world.World;
 import org.joml.Vector3f;
+
 import static org.lwjgl.glfw.GLFW.*;
 
 public class Player {
@@ -18,31 +19,78 @@ public class Player {
     public float maxHealth = 2000.0f;
     public float highestY  = -1000f;
 
-    private float   velocityY   = 0.0f;
-    private boolean onGround    = false;
-    private boolean wasInWater  = false;
+    private float   velocityY  = 0.0f;
+    private boolean onGround   = false;
+    private boolean wasInWater = false;
 
     private static final float WIDTH      = 0.6f;
     private static final float HEIGHT     = 1.8f;
     private static final float EYE_HEIGHT = 1.6f;
 
     // ── MOVEMENT STATE ────────────────────────────────────────────────────────
-    private boolean lastW      = false;
-    private double  lastWTime  = 0;
+    private boolean lastW     = false;
+    private double  lastWTime = 0;
     private boolean isSprinting = false;
 
     private boolean lastSpace    = false;
     private double  lastSpaceTime = 0;
+
+    // ── FLIGHT ENGINE ─────────────────────────────────────────────────────────
+    // Public so Window.java can read roll/fov each frame.
+    public final FlightController flightController = new FlightController(this);
+
+    // Track last debugMode state to detect the transition and pick up launch vel
+    private boolean wasFlying = false;
+
+    // ── GROUND SMASH ─────────────────────────────────────────────────────────
+    //
+    // Trigger conditions (survival mode only, i.e. !debugMode):
+    //   • Player is airborne  (!onGround)
+    //   • Has fallen > GameConfig.smashMinHeight blocks since last highestY
+    //   • velocityY < GameConfig.smashTriggerVelocity  (falling fast)
+    //   • LEFT_SHIFT pressed this frame
+    //
+    // While isSmashing:
+    //   • All horizontal input is zeroed
+    //   • velocityY is forced to -smashDescentSpeed (rocket straight down)
+    //   • Camera pitch lerps toward -PI/2 (looking straight down)
+    //
+    // On impact (resolveCollisionY sets onGround while isSmashing is true):
+    //   • smashImpactX/Y/Z are set so Window.java can call World.createImpactCrater
+    //   • isSmashing is cleared
+    //   • Normal fall damage is suppressed for this landing
+    //
+    private boolean isSmashing = false;
+    private boolean lastShift  = false;   // edge detector for smash trigger
+
+    /**
+     * Set to world coordinates of smash impact, read and cleared by Window.java
+     * each frame to trigger the crater + screen shake + network sync.
+     * Integer.MIN_VALUE means no impact this frame.
+     */
+    public int  smashImpactX = Integer.MIN_VALUE;
+    public int  smashImpactY, smashImpactZ;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Constructor
+    // ─────────────────────────────────────────────────────────────────────────
 
     public Player(float x, float y, float z) {
         position = new Vector3f(x, y, z);
         highestY = y;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Main update (called with time-scaled deltaTime from Window.java)
+    // ─────────────────────────────────────────────────────────────────────────
+
     public void update(long window, Camera camera, World world, float deltaTime) {
         double now = glfwGetTime();
 
-        // ── DOUBLE-TAP W = SPRINT / SWIM FAST ─────────────────────────────
+        // ── Clear per-frame smash signal ──────────────────────────────────────
+        smashImpactX = Integer.MIN_VALUE;
+
+        // ── DOUBLE-TAP W → SPRINT ─────────────────────────────────────────────
         boolean currentW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
         if (currentW && !lastW) {
             if (now - lastWTime < 0.3) isSprinting = true;
@@ -51,12 +99,24 @@ public class Player {
         if (!currentW) isSprinting = false;
         lastW = currentW;
 
-        // ── DOUBLE-TAP SPACE = TOGGLE FLY ────────────────────────────────
+        // ── DOUBLE-TAP SPACE → TOGGLE FLIGHT ─────────────────────────────────
         boolean currentSpace = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
         if (currentSpace && !lastSpace) {
             if (now - lastSpaceTime < 0.3) {
                 debugMode = !debugMode;
                 velocityY = 0f;
+                isSmashing = false;
+                if (!debugMode) {
+                    // Transitioning OUT of flight — pick up launch velocity
+                    flightController.onFlightDeactivated();
+                    Vector3f lv = flightController.getLaunchVelocity();
+                    velocityY = lv.y;
+                    // Horizontal launch momentum is folded into position offset
+                    // because Player's ground movement doesn't use a 3D velocity;
+                    // apply one frame of it right now so the exit feels snappy.
+                    position.x += lv.x * deltaTime;
+                    position.z += lv.z * deltaTime;
+                }
             }
             lastSpaceTime = now;
         }
@@ -68,128 +128,202 @@ public class Player {
                 : isSprinting ? GameConfig.SPRINT_SPEED
                   : GameConfig.WALK_SPEED;
 
-        // ── USE LOOK DIRECTION IF IN WATER FOR PITCH SWIMMING ──
-        boolean isCameraInWater = isBlockLiquid(world, camera.position.x, camera.position.y, camera.position.z);
+        boolean isCameraInWater = isBlockLiquid(world,
+                camera.position.x, camera.position.y, camera.position.z);
         Vector3f forward = isCameraInWater ? camera.getLookDirection() : camera.getForward();
         Vector3f right   = camera.getRight();
 
+        // ── FLIGHT MODE — delegate to FlightController ───────────────────────
+        if (debugMode) {
+            flightController.update(window, camera, world, deltaTime);
+            wasFlying = true;
+            camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
+            // Keep highestY tracking neutral so exit doesn't trigger fall damage
+            highestY = position.y;
+            return;
+        }
+
+        // Flight just switched off — FlightController already handled handoff above
+        if (wasFlying) {
+            wasFlying = false;
+        }
+
+        // Always decay camera roll/fov to zero when not flying
+        flightController.decayEffects(deltaTime);
+
         float dx = 0f, dy = 0f, dz = 0f;
 
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-            dx += forward.x * speed * deltaTime;
-            dz += forward.z * speed * deltaTime;
-            if (isCameraInWater) velocityY += forward.y * speed * 3.5f * deltaTime; // Swim up/down!
-        }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-            dx -= forward.x * speed * deltaTime;
-            dz -= forward.z * speed * deltaTime;
-            if (isCameraInWater) velocityY -= forward.y * speed * 3.5f * deltaTime;
-        }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { dx += right.x * speed * deltaTime; dz += right.z * speed * deltaTime; }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { dx -= right.x * speed * deltaTime; dz -= right.z * speed * deltaTime; }
+        // ── GROUND SMASH — pre-empt normal input while smashing ───────────────
+        if (isSmashing) {
+            // Locked descent: ignore all horizontal input
+            velocityY = -GameConfig.smashDescentSpeed;
 
-        if (debugMode) {
-            // ... (keep Fly Mode as is)
-            // ── FLY MODE ──────────────────────────────────────────────────
-            if (currentSpace) dy += speed * deltaTime;
-            if (shiftHeld)    dy -= speed * deltaTime;
-            position.x += dx; position.y += dy; position.z += dz;
-            highestY = position.y;
+            // Pitch camera gently downward — far enough to feel powerful without
+            // the jarring instant snap to straight-down that felt disorienting.
+            // Target: ~55° below horizontal (was 90° / straight-down).
+            float targetPitch = -(float)(Math.PI * 0.305);  // ≈ –55°
+            camera.pitch += (targetPitch - camera.pitch) * Math.min(1f, 4f * deltaTime);
 
         } else {
-            // ── SURVIVAL MODE ─────────────────────────────────────────────
-            boolean inWater   = isBlockLiquid(world, position.x, position.y + 0.1f,     position.z);
-            boolean submerged = isBlockLiquid(world, position.x, position.y + EYE_HEIGHT, position.z);
+            // Normal input
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+                dx += forward.x * speed * deltaTime;
+                dz += forward.z * speed * deltaTime;
+                if (isCameraInWater) velocityY += forward.y * speed * 3.5f * deltaTime;
+            }
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+                dx -= forward.x * speed * deltaTime;
+                dz -= forward.z * speed * deltaTime;
+                if (isCameraInWater) velocityY -= forward.y * speed * 3.5f * deltaTime;
+            }
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { dx += right.x * speed * deltaTime; dz += right.z * speed * deltaTime; }
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { dx -= right.x * speed * deltaTime; dz -= right.z * speed * deltaTime; }
+        }
 
-            if (inWater && !wasInWater) highestY = position.y;
+        // ── SURVIVAL PHYSICS ──────────────────────────────────────────────────
+        boolean inWater   = isBlockLiquid(world, position.x, position.y + 0.1f,      position.z);
+        boolean submerged = isBlockLiquid(world, position.x, position.y + EYE_HEIGHT, position.z);
 
-            if (inWater) {
-                // ── WATER PHYSICS ─────────────────────────────────────────
-                velocityY -= 2.5f * deltaTime;
-                if (submerged) velocityY += 8.0f * deltaTime;
+        if (inWater && !wasInWater) highestY = position.y;
 
-                // Heavily increased vertical responsiveness!
-                if (currentSpace) velocityY += 35f * deltaTime;
-                if (shiftHeld)    velocityY -= 35f * deltaTime;
+        if (inWater) {
+            // ── WATER PHYSICS ─────────────────────────────────────────────────
+            velocityY -= 2.5f * deltaTime;
+            if (submerged) velocityY += 8.0f * deltaTime;
 
-                velocityY *= (float) Math.pow(0.85f, deltaTime * 60f);
-                velocityY  = Math.max(-4.0f, Math.min(4.0f, velocityY));
+            if (currentSpace) velocityY += 35f * deltaTime;
+            if (shiftHeld)    velocityY -= 35f * deltaTime;
 
-                if (isSprinting) { dx *= 0.90f; dz *= 0.90f; } else { dx *= 0.55f; dz *= 0.55f; }
-                highestY = position.y;
+            velocityY *= (float)Math.pow(0.85f, deltaTime * 60f);
+            velocityY  = Math.max(-4.0f, Math.min(4.0f, velocityY));
 
+            if (isSprinting) { dx *= 0.90f; dz *= 0.90f; } else { dx *= 0.55f; dz *= 0.55f; }
+            highestY = position.y;
+            isSmashing = false; // cancel smash if we hit water
+
+        } else if (!isSmashing) {
+            // ── LAND PHYSICS ──────────────────────────────────────────────────
+            velocityY -= GameConfig.GRAVITY * deltaTime;
+
+            if (wasInWater && currentSpace) {
+                velocityY = GameConfig.JUMP_FORCE * 0.85f;
+            } else if (currentSpace && onGround) {
+                velocityY = GameConfig.JUMP_FORCE;
+                onGround  = false;
+            }
+
+            // ── SMASH TRIGGER ─────────────────────────────────────────────────
+            // Triggered on the FIRST frame the shift key is pressed while
+            // falling fast enough, high enough. Edge-detect shift to avoid
+            // re-triggering every frame.
+            boolean shiftJustPressed = shiftHeld && !lastShift;
+            if (!onGround
+                    && shiftJustPressed
+                    && velocityY < GameConfig.smashTriggerVelocity
+                    && (highestY - position.y) > GameConfig.smashMinHeight) {
+                isSmashing = true;
+            }
+        }
+
+        lastShift  = shiftHeld;
+        wasInWater = inWater;
+        dy = velocityY * deltaTime;
+
+        // ── AXIS-BY-AXIS SUB-STEPPING ─────────────────────────────────────────
+        int substeps = (int)Math.ceil(
+                Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz))) * 10f);
+        substeps = Math.max(1, substeps);
+
+        float stepX = dx / substeps, stepY = dy / substeps, stepZ = dz / substeps;
+
+        boolean wasOnGround = onGround;
+        onGround = false;
+
+        for (int i = 0; i < substeps; i++) {
+            if (stepX != 0f) { position.x += stepX; if (resolveCollisionX(world, stepX)) { stepX = 0f; isSprinting = false; } }
+            if (stepY != 0f) { position.y += stepY; if (resolveCollisionY(world, stepY)) stepY = 0f; }
+            if (stepZ != 0f) { position.z += stepZ; if (resolveCollisionZ(world, stepZ)) { stepZ = 0f; isSprinting = false; } }
+        }
+
+        // ── LANDING ───────────────────────────────────────────────────────────
+        if (!wasOnGround && onGround) {
+            if (isSmashing) {
+                // ── SMASH LANDING: signal Window.java, suppress fall damage ───
+                smashImpactX = (int)Math.floor(position.x);
+                smashImpactY = (int)Math.floor(position.y);
+                smashImpactZ = (int)Math.floor(position.z);
+                isSmashing   = false;
+                velocityY    = 0f;
+                // Restore camera pitch to a comfortable angle after smash
+                camera.pitch = (float)Math.toRadians(-30.0);
             } else {
-                // ── LAND PHYSICS & DOLPHIN JUMP ───────────────────────────
-                velocityY -= GameConfig.GRAVITY * deltaTime;
-
-                // If you hold Space right as you leave the water, you get launched onto land!
-                if (wasInWater && currentSpace) {
-                    velocityY = GameConfig.JUMP_FORCE * 0.85f;
-                }
-                else if (currentSpace && onGround) {
-                    velocityY = GameConfig.JUMP_FORCE;
-                    onGround  = false;
-                }
-            }
-
-            wasInWater = inWater; // Save for next frame
-            dy = velocityY * deltaTime;
-
-            // ── AXIS-BY-AXIS SUB-STEPPING ─────────────────────────────────
-            int substeps = (int) Math.ceil(
-                    Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz))) * 10f);
-            substeps = Math.max(1, substeps);
-
-            float stepX = dx / substeps, stepY = dy / substeps, stepZ = dz / substeps;
-
-            boolean wasOnGround = onGround;
-            onGround = false;
-
-            for (int i = 0; i < substeps; i++) {
-                if (stepX != 0) { position.x += stepX; if (resolveCollisionX(world, stepX)) { stepX = 0; isSprinting = false; } }
-                if (stepY != 0) { position.y += stepY; if (resolveCollisionY(world, stepY)) stepY = 0; }
-                if (stepZ != 0) { position.z += stepZ; if (resolveCollisionZ(world, stepZ)) { stepZ = 0; isSprinting = false; } }
-            }
-
-            // ── FALL DAMAGE ───────────────────────────────────────────────
-            if (!wasOnGround && onGround) {
+                // ── NORMAL FALL DAMAGE ────────────────────────────────────────
                 float fallDist = highestY - position.y;
                 if (fallDist > 4.0f) {
                     health -= (fallDist * 0.5f - 2.0f);
-                    if (health <= 0) {
+                    if (health <= 0f) {
                         System.out.println("You died!");
-                        position.set(400, 200, 400);
+                        position.set(1000, 255, 1000);
                         health = maxHealth;
                     }
                 }
-                highestY = position.y;
-            } else if (onGround) {
-                highestY = position.y;
-            } else if (position.y > highestY) {
-                highestY = position.y;
             }
+            highestY = position.y;
+        } else if (onGround) {
+            highestY = position.y;
+            isSmashing = false; // safety clear
+        } else if (position.y > highestY) {
+            highestY = position.y;
         }
 
         camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Convenience accessors (delegate to FlightController for Window.java)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Camera roll in radians for the current frame (0 when not flying). */
+    public float getCameraRoll() { return flightController.getCameraRoll(); }
+
+    /**
+     * FOV boost in degrees for the current frame.
+     * During a ground smash descent the FOV narrows (negative boost / tunnel-vision)
+     * to sell the intense speed, then returns to normal on impact.
+     */
+    public float getCameraFovBoost() {
+        if (isSmashing) {
+            // Tunnel-vision: FOV compresses slightly while smashing to feel faster
+            return -8f;
+        }
+        return flightController.getFovBoost();
+    }
+
+    /** True when the ground-smash descent is active. */
+    public boolean isSmashing() { return isSmashing; }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
     private boolean isBlockLiquid(World world, float x, float y, float z) {
-        return world.getBlock((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z)).isLiquid();
+        return world.getBlock(
+                (int)Math.floor(x), (int)Math.floor(y), (int)Math.floor(z)).isLiquid();
     }
 
     private static final float EPSILON = 0.01f;
 
     private boolean resolveCollisionX(World world, float dx) {
         float halfW = WIDTH / 2f;
-        int minY = (int) Math.floor(position.y + EPSILON),      maxY = (int) Math.floor(position.y + HEIGHT - EPSILON);
-        int minZ = (int) Math.floor(position.z - halfW + EPSILON), maxZ = (int) Math.floor(position.z + halfW - EPSILON);
+        int minY = (int)Math.floor(position.y + EPSILON),           maxY = (int)Math.floor(position.y + HEIGHT - EPSILON);
+        int minZ = (int)Math.floor(position.z - halfW + EPSILON),   maxZ = (int)Math.floor(position.z + halfW - EPSILON);
 
         if (dx > 0) {
-            int leadX = (int) Math.floor(position.x + halfW);
+            int leadX = (int)Math.floor(position.x + halfW);
             for (int y = minY; y <= maxY; y++) for (int z = minZ; z <= maxZ; z++)
                 if (world.getBlock(leadX, y, z).isSolid()) { position.x = leadX - halfW; return true; }
         } else if (dx < 0) {
-            int trailX = (int) Math.floor(position.x - halfW);
+            int trailX = (int)Math.floor(position.x - halfW);
             for (int y = minY; y <= maxY; y++) for (int z = minZ; z <= maxZ; z++)
                 if (world.getBlock(trailX, y, z).isSolid()) { position.x = trailX + 1f + halfW; return true; }
         }
@@ -198,15 +332,15 @@ public class Player {
 
     private boolean resolveCollisionY(World world, float dy) {
         float halfW = WIDTH / 2f;
-        int minX = (int) Math.floor(position.x - halfW + EPSILON), maxX = (int) Math.floor(position.x + halfW - EPSILON);
-        int minZ = (int) Math.floor(position.z - halfW + EPSILON), maxZ = (int) Math.floor(position.z + halfW - EPSILON);
+        int minX = (int)Math.floor(position.x - halfW + EPSILON), maxX = (int)Math.floor(position.x + halfW - EPSILON);
+        int minZ = (int)Math.floor(position.z - halfW + EPSILON), maxZ = (int)Math.floor(position.z + halfW - EPSILON);
 
         if (dy > 0) {
-            int headY = (int) Math.floor(position.y + HEIGHT);
+            int headY = (int)Math.floor(position.y + HEIGHT);
             for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++)
                 if (world.getBlock(x, headY, z).isSolid()) { position.y = headY - HEIGHT; velocityY = 0f; return true; }
         } else if (dy < 0) {
-            int feetY = (int) Math.floor(position.y);
+            int feetY = (int)Math.floor(position.y);
             for (int x = minX; x <= maxX; x++) for (int z = minZ; z <= maxZ; z++)
                 if (world.getBlock(x, feetY, z).isSolid()) { position.y = feetY + 1f; velocityY = 0f; onGround = true; return true; }
         }
@@ -215,15 +349,15 @@ public class Player {
 
     private boolean resolveCollisionZ(World world, float dz) {
         float halfW = WIDTH / 2f;
-        int minX = (int) Math.floor(position.x - halfW + EPSILON), maxX = (int) Math.floor(position.x + halfW - EPSILON);
-        int minY = (int) Math.floor(position.y + EPSILON),          maxY = (int) Math.floor(position.y + HEIGHT - EPSILON);
+        int minX = (int)Math.floor(position.x - halfW + EPSILON), maxX = (int)Math.floor(position.x + halfW - EPSILON);
+        int minY = (int)Math.floor(position.y + EPSILON),          maxY = (int)Math.floor(position.y + HEIGHT - EPSILON);
 
         if (dz > 0) {
-            int leadZ = (int) Math.floor(position.z + halfW);
+            int leadZ = (int)Math.floor(position.z + halfW);
             for (int x = minX; x <= maxX; x++) for (int y = minY; y <= maxY; y++)
                 if (world.getBlock(x, y, leadZ).isSolid()) { position.z = leadZ - halfW; return true; }
         } else if (dz < 0) {
-            int trailZ = (int) Math.floor(position.z - halfW);
+            int trailZ = (int)Math.floor(position.z - halfW);
             for (int x = minX; x <= maxX; x++) for (int y = minY; y <= maxY; y++)
                 if (world.getBlock(x, y, trailZ).isSolid()) { position.z = trailZ + 1f + halfW; return true; }
         }
@@ -236,14 +370,13 @@ public class Player {
         org.joml.Vector3f dir = camera.getLookDirection();
         float ddx = dir.x * STEP, ddy = dir.y * STEP, ddz = dir.z * STEP;
 
-        int lastBX = (int) Math.floor(rx), lastBY = (int) Math.floor(ry), lastBZ = (int) Math.floor(rz);
+        int lastBX = (int)Math.floor(rx), lastBY = (int)Math.floor(ry), lastBZ = (int)Math.floor(rz);
         float dist = 0;
 
         while (dist < MAX_REACH) {
             rx += ddx; ry += ddy; rz += ddz; dist += STEP;
-            int bx = (int) Math.floor(rx), by = (int) Math.floor(ry), bz = (int) Math.floor(rz);
+            int bx = (int)Math.floor(rx), by = (int)Math.floor(ry), bz = (int)Math.floor(rz);
 
-            // Raycast passes cleanly through water since it is not solid!
             if (world.getBlock(bx, by, bz).isSolid()) {
                 RaycastResult res = new RaycastResult();
                 res.hit = true; res.hitX = bx; res.hitY = by; res.hitZ = bz;

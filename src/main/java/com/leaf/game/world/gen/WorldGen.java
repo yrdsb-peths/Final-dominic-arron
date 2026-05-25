@@ -36,6 +36,21 @@ public class WorldGen {
     private ErodedFbmGenerator eroFbm;
     private BlockCladder       cladder;
 
+    /**
+     * Seed-dependent XZ coordinate offsets applied to every noise sample.
+     *
+     * Why this matters: Perlin noise always returns 0 at exactly integer
+     * coordinates.  Many low-frequency samplers (contFreq=0.001) hit integer
+     * inputs at positions like (1000, 1000) because 1000 × 0.001 = 1.0.
+     * Without an offset every seed produces the same terrain at those
+     * positions, making seed changes appear ineffective near the spawn.
+     *
+     * The offsets are derived from the seed via a quick splitmix64 pass,
+     * yielding values in [0, 512) so they never alias back to integer inputs.
+     */
+    private float seedOffX;
+    private float seedOffZ;
+
     // Cave noises
     private Noise cheeseCave;
     private Noise spagNoise1;
@@ -71,6 +86,19 @@ public class WorldGen {
         );
         cladder  = new BlockCladder(GameConfig.mountainSnowAltitude);
         features = new FeatureGenerator(seed);
+
+        // Compute seed-dependent coordinate offsets (splitmix64 pass)
+        long hx = seed ^ 0xDEADBEEFCAFEL;
+        hx = (hx ^ (hx >>> 30)) * 0xBF58476D1CE4E5B9L;
+        hx = (hx ^ (hx >>> 27)) * 0x94D049BB133111EBL;
+        hx = hx ^ (hx >>> 31);
+        seedOffX = ((hx & 0xFFFFL) / (float)0xFFFF) * 512f;   // [0, 512)
+
+        long hz = seed ^ 0xBEEFCAFE12345678L;
+        hz = (hz ^ (hz >>> 30)) * 0xBF58476D1CE4E5B9L;
+        hz = (hz ^ (hz >>> 27)) * 0x94D049BB133111EBL;
+        hz = hz ^ (hz >>> 31);
+        seedOffZ = ((hz & 0xFFFFL) / (float)0xFFFF) * 512f;   // [0, 512)
     }
 
     public void resetSeed(long seed) { init(seed); }
@@ -100,23 +128,36 @@ public class WorldGen {
         return (dx * dx + dz * dz) < (maxR * maxR);
     }
 
+    // ── All sample methods apply the seed-based offset to their XZ input so that
+    //    different seeds produce visually distinct terrain everywhere, including
+    //    at positions whose coordinates would otherwise land on integer (zero) noise cells.
+
     public float sampleContinentalness(int wx, int wz) {
-        float raw = continentalness.octave(wx * GameConfig.contFreq, wz * GameConfig.contFreq, GameConfig.contOctaves, GameConfig.contPersist);
+        float fx = (wx + seedOffX) * GameConfig.contFreq;
+        float fz = (wz + seedOffZ) * GameConfig.contFreq;
+        float raw = continentalness.octave(fx, fz, GameConfig.contOctaves, GameConfig.contPersist);
         return (float)(Math.signum(raw) * Math.pow(Math.abs(raw), 0.6));
     }
     public float sampleErosion(int wx, int wz) {
         float wf = GameConfig.erosWarpFreq;
         float ws = GameConfig.erosWarpStrength;
-        float offsetX = ws * warpNoise.get(wx * wf, wz * wf);
-        float offsetZ = ws * warpNoise.get(wx * wf + 31.7f, wz * wf + 17.3f);
-        return erosion.octave((wx + offsetX) * GameConfig.erosFreq, (wz + offsetZ) * GameConfig.erosFreq, GameConfig.erosOctaves, GameConfig.erosPersist);
+        float ox = wx + seedOffX, oz = wz + seedOffZ;
+        float offsetX = ws * warpNoise.get(ox * wf, oz * wf);
+        float offsetZ = ws * warpNoise.get(ox * wf + 31.7f, oz * wf + 17.3f);
+        return erosion.octave((ox + offsetX) * GameConfig.erosFreq, (oz + offsetZ) * GameConfig.erosFreq, GameConfig.erosOctaves, GameConfig.erosPersist);
     }
     public float samplePeaksValleys(int wx, int wz) {
-        return peaksValleys.ridgedOctave(wx * GameConfig.pvFreq, wz * GameConfig.pvFreq, GameConfig.pvOctaves, GameConfig.pvPersist);
+        return peaksValleys.ridgedOctave((wx + seedOffX) * GameConfig.pvFreq, (wz + seedOffZ) * GameConfig.pvFreq, GameConfig.pvOctaves, GameConfig.pvPersist);
     }
-    public float sampleTemperature(int wx, int wz) { return temperature.octave(wx * GameConfig.tempFreq, wz * GameConfig.tempFreq, GameConfig.tempOctaves, GameConfig.tempPersist); }
-    public float sampleHumidity(int wx, int wz) { return humidity.octave(wx * GameConfig.humFreq, wz * GameConfig.humFreq, GameConfig.humOctaves, GameConfig.humPersist); }
-    public float sampleRiver(int wx, int wz) { return riverNoise.octave(wx * GameConfig.riverFreq, wz * GameConfig.riverFreq, GameConfig.riverOctaves, GameConfig.riverPersist); }
+    public float sampleTemperature(int wx, int wz) {
+        return temperature.octave((wx + seedOffX) * GameConfig.tempFreq, (wz + seedOffZ) * GameConfig.tempFreq, GameConfig.tempOctaves, GameConfig.tempPersist);
+    }
+    public float sampleHumidity(int wx, int wz) {
+        return humidity.octave((wx + seedOffX) * GameConfig.humFreq, (wz + seedOffZ) * GameConfig.humFreq, GameConfig.humOctaves, GameConfig.humPersist);
+    }
+    public float sampleRiver(int wx, int wz) {
+        return riverNoise.octave((wx + seedOffX) * GameConfig.riverFreq, (wz + seedOffZ) * GameConfig.riverFreq, GameConfig.riverOctaves, GameConfig.riverPersist);
+    }
     public float sampleHeight(int wx, int wz) { return computeFinalShape(sampleContinentalness(wx, wz), sampleErosion(wx, wz), samplePeaksValleys(wx, wz)); }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -217,7 +258,7 @@ public class WorldGen {
                 boolean isAlpine = false;
                 float fbmSlope = 0f;
 
-                float mMask = mountainMask.ridgedOctave(wx * 0.001f, wz * 0.001f, 2, 0.5f);
+                float mMask = mountainMask.ridgedOctave((wx + seedOffX) * 0.001f, (wz + seedOffZ) * 0.001f, 2, 0.5f);
                 float mountainSpawnThreshold = 0.30f;
 
                 if (c > 0.05f && mMask > mountainSpawnThreshold) {

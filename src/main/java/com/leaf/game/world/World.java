@@ -121,6 +121,17 @@ public class World {
     public java.util.Collection<Chunk> getAllChunks() { return chunks.values(); }
     public void clearAllChunks() { chunks.clear(); activeLiquids.clear(); }
 
+    /**
+     * Shuts down the background chunk-generation thread pool.
+     * Call from the main thread after the render loop exits so Java can exit cleanly.
+     * Without this, non-daemon worker threads keep the JVM alive indefinitely.
+     */
+    public void shutdown() {
+        chunkThreadPool.shutdownNow();
+        try { chunkThreadPool.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+    }
+
     public void updateChunks(World world, WorldGen gen, Player player) {
         int RENDER_DISTANCE = GameConfig.renderDistance;
         int playerCX = Math.floorDiv((int) player.position.x, Chunk.SIZE);
@@ -417,4 +428,75 @@ public class World {
     private int unpackX(long p) { return (int)((p >>> 39) & 0x1FFFFFF) - X_BIAS; }
     private int unpackZ(long p) { return (int)((p >>> 14) & 0x1FFFFFF) - Z_BIAS; }
     private int unpackY(long p) { return (int)(p & 0x3FFF)  - Y_BIAS; }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  GROUND SMASH — Impact Crater
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Carves a spherical crater centred at (wx, wy, wz) with the given radius.
+     *
+     * Algorithm:
+     *   • Inner sphere (dist < radius - 1): blocks removed → AIR.
+     *   • Edge shell  (radius - 1 ≤ dist ≤ radius): solid blocks → GRAVEL.
+     *   • All affected chunks are rebuilt once at the end (not per-block).
+     *
+     * The method is called on the main OpenGL thread (same as buildChunkMeshes),
+     * so mesh rebuilds are safe.  Must NOT be called from a background thread.
+     *
+     * Window.java spawns a burst of DroppedItem ejecta after calling this to
+     * give the visual impression of debris flying outward.
+     *
+     * @param wx  world X of smash impact
+     * @param wy  world Y of smash impact
+     * @param wz  world Z of smash impact
+     * @param radius  sphere radius in blocks (GameConfig.smashCraterRadius)
+     */
+    public void createImpactCrater(int wx, int wy, int wz, int radius) {
+        Set<Chunk> dirtyChunks = new java.util.HashSet<>();
+        float rSq      = (float)(radius * radius);
+        float edgeInner = (radius - 1f);
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    float distSq = dx*dx + dy*dy + dz*dz;
+                    if (distSq > rSq) continue;
+
+                    int bx = wx + dx, by = wy + dy, bz = wz + dz;
+                    Block existing = getBlock(bx, by, bz);
+
+                    // Only modify solid non-bedrock blocks
+                    if (!existing.isSolid()) continue;
+
+                    float dist = (float)Math.sqrt(distSq);
+                    Block replacement = (dist >= edgeInner) ? Block.GRAVEL : Block.AIR;
+
+                    // setBlock without triggerUpdate to avoid scheduling thousands
+                    // of fluid updates; we'll handle that after the loop.
+                    setBlock(bx, by, bz, replacement);
+
+                    // Track the chunk for a single mesh rebuild
+                    int cx = Math.floorDiv(bx, Chunk.SIZE);
+                    int cy = Math.floorDiv(by, Chunk.HEIGHT);
+                    int cz = Math.floorDiv(bz, Chunk.SIZE);
+                    Chunk c = getChunk(cx, cy, cz);
+                    if (c != null) dirtyChunks.add(c);
+                }
+            }
+        }
+
+        // Rebuild all affected chunk meshes exactly once
+        for (Chunk c : dirtyChunks) {
+            buildChunkMeshes(c);
+        }
+
+        // Trigger fluid updates on the crater rim so exposed water can flow
+        for (int dx = -(radius+1); dx <= radius+1; dx++) {
+            for (int dz = -(radius+1); dz <= radius+1; dz++) {
+                scheduleFluidUpdate(wx + dx, wy, wz + dz);
+                scheduleFluidUpdate(wx + dx, wy + radius, wz + dz);
+            }
+        }
+    }
 }

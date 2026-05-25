@@ -12,9 +12,9 @@ public class Inventory {
 
     // How many blocks the player starts with (so they can build immediately)
     public Inventory() {
-        items.put(Block.GRASS, 0);
-        items.put(Block.DIRT,  0);
-        items.put(Block.STONE, 0);
+        items.put(Block.GRASS, 64);
+        items.put(Block.DIRT,  64);
+        items.put(Block.STONE, 64);
         items.put(Block.WATER, 64);
     }
 
