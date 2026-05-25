@@ -20,13 +20,16 @@ dependencies {
     implementation "org.lwjgl:lwjgl-stb"
     implementation "org.joml:joml:1.10.5"
 
-    // This part is the most compatible way to handle natives
+    // Dynamic multiplatform native bindings check
     def os = System.getProperty("os.name").toLowerCase()
     def arch = System.getProperty("os.arch").toLowerCase()
     if (os.contains("win")) {
         runtimeOnly "org.lwjgl:lwjgl::natives-windows"
         runtimeOnly "org.lwjgl:lwjgl-glfw::natives-windows"
         runtimeOnly "org.lwjgl:lwjgl-opengl::natives-windows"
+
+        // Pulls the correct Windows natives for your friend
+        runtimeOnly "io.github.spair:imgui-java-natives-windows:1.86.12"
     } else if (os.contains("mac")) {
         if (arch.contains("aarch64") || arch.contains("arm64")) {
             runtimeOnly "org.lwjgl:lwjgl::natives-macos-arm64"
@@ -37,12 +40,14 @@ dependencies {
             runtimeOnly "org.lwjgl:lwjgl-glfw::natives-macos"
             runtimeOnly "org.lwjgl:lwjgl-opengl::natives-macos"
         }
-    }// ImGui Core (1.86.12 actually exists!)
+
+        // Pulls the correct macOS natives for you (with universal Apple Silicon / Intel support)
+        runtimeOnly "io.github.spair:imgui-java-natives-macos:1.86.12"
+    }
+
+    // ImGui Core libraries
     implementation "io.github.spair:imgui-java-binding:1.86.12"
     implementation "io.github.spair:imgui-java-lwjgl3:1.86.12"
-
-    // The macOS natives for 1.86.12 (This single file contains the Apple Silicon fix!)
-    runtimeOnly "io.github.spair:imgui-java-natives-macos:1.86.12"
 }
 
 java {
