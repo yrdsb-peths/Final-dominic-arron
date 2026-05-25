@@ -26,3 +26,17 @@ hs_err_pid*
 replay_pid*
 
 context.txt
+
+# Game Saves & Local Run Data
+savegame.txt
+
+# Development Automation & AI Context Files
+claudebox.txt
+prompt.txt
+scheduler.sh
+
+# Development Automation & AI Context Files
+claudebox.txt
+prompt.txt
+scheduler.sh
+imgui.ini
