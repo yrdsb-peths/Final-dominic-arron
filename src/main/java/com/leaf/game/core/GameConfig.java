@@ -96,7 +96,7 @@ public class GameConfig {
     // GRAPPLE: hook-and-swing
     public static float grappleRange        = 50.0f;  // max cast distance (blocks)
     public static float grappleSwingStrength = 1.25f; // gravity multiplier in swing
-    public static float grappleCooldown     = 1.2f;   // seconds between shots
+    public static float grappleCooldown     = 0.15f;  // Reduced from 1.2f for rapid AOT-style response
 
     // Camera effects (apply to all flight modes)
     public static float flightFovMax       = 25.0f;  // max FOV boost above base fov

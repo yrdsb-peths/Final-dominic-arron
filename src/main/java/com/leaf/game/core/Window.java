@@ -631,30 +631,36 @@ public class Window {
                     }
                 }
                 glDisable(GL_BLEND);
-                // ── RENDER GRAPPLE CABLE ──────────────────────────────────────
-                // If the player is hooked, render a thin, glowing amethyst cable
-                // connecting them to their anchor point.
+                // ── RENDER GRAPPLE CABLE & LASER SIGHT ─────────────────────────
                 FlightController fc = player.flightController;
-                if (fc.isHooked()) {
-                    Vector3f hookPoint  = fc.getHookPoint();
+                if (player.debugMode && fc.getMode() == FlightController.FlightMode.GRAPPLE) {
                     Vector3f playerHand = new Vector3f(player.position.x, player.position.y + 0.9f, player.position.z);
-                    Vector3f ropeDir    = new Vector3f(hookPoint).sub(playerHand);
-                    float    ropeDist   = ropeDir.length();
+                    Vector3f targetPoint = fc.isHooked() ? fc.getHookPoint() : fc.getAimTarget(camera, world);
+                    boolean isLaser = !fc.isHooked();
 
-                    if (ropeDist > 0.1f) {
-                        ropeDir.normalize();
+                    if (targetPoint != null) {
+                        Vector3f ropeDir  = new Vector3f(targetPoint).sub(playerHand);
+                        float    ropeDist = ropeDir.length();
 
-                        // Compute rotation using a Quaternion first
-                        org.joml.Quaternionf ropeRot = new org.joml.Quaternionf().rotationTo(new org.joml.Vector3f(0, 0, 1), ropeDir);
+                        if (ropeDist > 0.1f) {
+                            ropeDir.normalize();
+                            org.joml.Quaternionf ropeRot = new org.joml.Quaternionf().rotationTo(new org.joml.Vector3f(0, 0, 1), ropeDir);
 
-                        Matrix4f ropeModel = new Matrix4f()
-                                .translate(playerHand.x, playerHand.y, playerHand.z)
-                                .rotate(ropeRot)
-                                .scale(0.04f, 0.04f, ropeDist); // extremely thin and long
+                            float thickness = isLaser ? 0.008f : 0.04f;
 
-                        Matrix4f ropeMvp = new Matrix4f(projection).mul(view).mul(ropeModel);
-                        shader.setUniform("mvp", ropeMvp);
-                        getItemMesh(Block.CRYSTAL_AMETHYST).render(); // glowing purple cable
+                            // CRITICAL FIX: Translate by half distance in Z so it actually starts at the hand!
+                            Matrix4f ropeModel = new Matrix4f()
+                                    .translate(playerHand.x, playerHand.y, playerHand.z)
+                                    .rotate(ropeRot)
+                                    .translate(0f, 0f, ropeDist * 0.5f)
+                                    .scale(thickness, thickness, ropeDist / 0.24f);
+
+                            Matrix4f ropeMvp = new Matrix4f(projection).mul(view).mul(ropeModel);
+                            shader.setUniform("mvp", ropeMvp);
+
+                            Block renderBlock = isLaser ? Block.CRYSTAL_ROSE : Block.CRYSTAL_AMETHYST;
+                            getItemMesh(renderBlock).render();
+                        }
                     }
                 }
                 // ── ITEMS ─────────────────────────────────────────────────────
@@ -1062,7 +1068,7 @@ public class Window {
                 if (fc.isHooked()) {
                     // Show hook distance
                     float hookDist = new Vector3f(fc.getHookPoint()).sub(player.position).length();
-                    String hookedStr = String.format("⦿ HOOKED  %.0fm  [SPACE] release", hookDist);
+                    String hookedStr = String.format("⦿ ZIPPING  %.0fm  Release to launch", hookDist);
                     draw.addText(cx - 72, cy + 28, black, hookedStr);
                     draw.addText(cx - 73, cy + 27, grappleGold, hookedStr);
 
@@ -1074,7 +1080,7 @@ public class Window {
                     draw.addLine(cx - d, cy,     cx,     cy - d, grappleGold, 2.0f);
                 } else {
                     // Unhooked: show targeting guide
-                    String aimStr = "[ ] AIM at surface + [SPACE] fire";
+                    String aimStr = "[ ] AIM + Hold [RIGHT-CLICK] or [F]";
                     draw.addText(cx - 88, cy + 28, black, aimStr);
                     draw.addText(cx - 89, cy + 27, grappleGrey, aimStr);
 

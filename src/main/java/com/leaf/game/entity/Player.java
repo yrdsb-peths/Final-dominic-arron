@@ -43,31 +43,9 @@ public class Player {
     private boolean wasFlying = false;
 
     // ── GROUND SMASH ─────────────────────────────────────────────────────────
-    //
-    // Trigger conditions (survival mode only, i.e. !debugMode):
-    //   • Player is airborne  (!onGround)
-    //   • Has fallen > GameConfig.smashMinHeight blocks since last highestY
-    //   • velocityY < GameConfig.smashTriggerVelocity  (falling fast)
-    //   • LEFT_SHIFT pressed this frame
-    //
-    // While isSmashing:
-    //   • All horizontal input is zeroed
-    //   • velocityY is forced to -smashDescentSpeed (rocket straight down)
-    //   • Camera pitch lerps toward -PI/2 (looking straight down)
-    //
-    // On impact (resolveCollisionY sets onGround while isSmashing is true):
-    //   • smashImpactX/Y/Z are set so Window.java can call World.createImpactCrater
-    //   • isSmashing is cleared
-    //   • Normal fall damage is suppressed for this landing
-    //
     private boolean isSmashing = false;
     private boolean lastShift  = false;   // edge detector for smash trigger
 
-    /**
-     * Set to world coordinates of smash impact, read and cleared by Window.java
-     * each frame to trigger the crater + screen shake + network sync.
-     * Integer.MIN_VALUE means no impact this frame.
-     */
     public int  smashImpactX = Integer.MIN_VALUE;
     public int  smashImpactY, smashImpactZ;
 
@@ -107,13 +85,9 @@ public class Player {
                 velocityY = 0f;
                 isSmashing = false;
                 if (!debugMode) {
-                    // Transitioning OUT of flight — pick up launch velocity
                     flightController.onFlightDeactivated();
                     Vector3f lv = flightController.getLaunchVelocity();
                     velocityY = lv.y;
-                    // Horizontal launch momentum is folded into position offset
-                    // because Player's ground movement doesn't use a 3D velocity;
-                    // apply one frame of it right now so the exit feels snappy.
                     position.x += lv.x * deltaTime;
                     position.z += lv.z * deltaTime;
                 }
@@ -138,34 +112,25 @@ public class Player {
             flightController.update(window, camera, world, deltaTime);
             wasFlying = true;
             camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
-            // Keep highestY tracking neutral so exit doesn't trigger fall damage
             highestY = position.y;
             return;
         }
 
-        // Flight just switched off — FlightController already handled handoff above
         if (wasFlying) {
             wasFlying = false;
         }
 
-        // Always decay camera roll/fov to zero when not flying
         flightController.decayEffects(deltaTime);
 
         float dx = 0f, dy = 0f, dz = 0f;
 
         // ── GROUND SMASH — pre-empt normal input while smashing ───────────────
         if (isSmashing) {
-            // Locked descent: ignore all horizontal input
             velocityY = -GameConfig.smashDescentSpeed;
-
-            // Pitch camera gently downward — far enough to feel powerful without
-            // the jarring instant snap to straight-down that felt disorienting.
-            // Target: ~55° below horizontal (was 90° / straight-down).
-            float targetPitch = -(float)(Math.PI * 0.305);  // ≈ –55°
+            float targetPitch = -(float)(Math.PI * 0.305);
             camera.pitch += (targetPitch - camera.pitch) * Math.min(1f, 4f * deltaTime);
 
         } else {
-            // Normal input
             if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
                 dx += forward.x * speed * deltaTime;
                 dz += forward.z * speed * deltaTime;
@@ -187,7 +152,6 @@ public class Player {
         if (inWater && !wasInWater) highestY = position.y;
 
         if (inWater) {
-            // ── WATER PHYSICS ─────────────────────────────────────────────────
             velocityY -= 2.5f * deltaTime;
             if (submerged) velocityY += 8.0f * deltaTime;
 
@@ -199,10 +163,9 @@ public class Player {
 
             if (isSprinting) { dx *= 0.90f; dz *= 0.90f; } else { dx *= 0.55f; dz *= 0.55f; }
             highestY = position.y;
-            isSmashing = false; // cancel smash if we hit water
+            isSmashing = false;
 
         } else if (!isSmashing) {
-            // ── LAND PHYSICS ──────────────────────────────────────────────────
             velocityY -= GameConfig.GRAVITY * deltaTime;
 
             if (wasInWater && currentSpace) {
@@ -212,10 +175,6 @@ public class Player {
                 onGround  = false;
             }
 
-            // ── SMASH TRIGGER ─────────────────────────────────────────────────
-            // Triggered on the FIRST frame the shift key is pressed while
-            // falling fast enough, high enough. Edge-detect shift to avoid
-            // re-triggering every frame.
             boolean shiftJustPressed = shiftHeld && !lastShift;
             if (!onGround
                     && shiftJustPressed
@@ -229,7 +188,6 @@ public class Player {
         wasInWater = inWater;
         dy = velocityY * deltaTime;
 
-        // ── AXIS-BY-AXIS SUB-STEPPING ─────────────────────────────────────────
         int substeps = (int)Math.ceil(
                 Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz))) * 10f);
         substeps = Math.max(1, substeps);
@@ -245,19 +203,15 @@ public class Player {
             if (stepZ != 0f) { position.z += stepZ; if (resolveCollisionZ(world, stepZ)) { stepZ = 0f; isSprinting = false; } }
         }
 
-        // ── LANDING ───────────────────────────────────────────────────────────
         if (!wasOnGround && onGround) {
             if (isSmashing) {
-                // ── SMASH LANDING: signal Window.java, suppress fall damage ───
                 smashImpactX = (int)Math.floor(position.x);
                 smashImpactY = (int)Math.floor(position.y);
                 smashImpactZ = (int)Math.floor(position.z);
                 isSmashing   = false;
                 velocityY    = 0f;
-                // Restore camera pitch to a comfortable angle after smash
                 camera.pitch = (float)Math.toRadians(-30.0);
             } else {
-                // ── NORMAL FALL DAMAGE ────────────────────────────────────────
                 float fallDist = highestY - position.y;
                 if (fallDist > 4.0f) {
                     health -= (fallDist * 0.5f - 2.0f);
@@ -271,7 +225,7 @@ public class Player {
             highestY = position.y;
         } else if (onGround) {
             highestY = position.y;
-            isSmashing = false; // safety clear
+            isSmashing = false;
         } else if (position.y > highestY) {
             highestY = position.y;
         }
@@ -279,32 +233,12 @@ public class Player {
         camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Convenience accessors (delegate to FlightController for Window.java)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /** Camera roll in radians for the current frame (0 when not flying). */
     public float getCameraRoll() { return flightController.getCameraRoll(); }
-
-    /**
-     * FOV boost in degrees for the current frame.
-     * During a ground smash descent the FOV narrows (negative boost / tunnel-vision)
-     * to sell the intense speed, then returns to normal on impact.
-     */
     public float getCameraFovBoost() {
-        if (isSmashing) {
-            // Tunnel-vision: FOV compresses slightly while smashing to feel faster
-            return -8f;
-        }
+        if (isSmashing) return -8f;
         return flightController.getFovBoost();
     }
-
-    /** True when the ground-smash descent is active. */
     public boolean isSmashing() { return isSmashing; }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Helpers
-    // ─────────────────────────────────────────────────────────────────────────
 
     private boolean isBlockLiquid(World world, float x, float y, float z) {
         return world.getBlock(
