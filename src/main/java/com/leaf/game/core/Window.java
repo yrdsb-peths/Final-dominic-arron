@@ -90,6 +90,10 @@ public class Window {
     private final List<Chunk> chunksToGenerate = new ArrayList<>();
     private int         totalPreloadCount    = 0;
     private int         currentPreloadProgress = 0;
+    // Network Timing & State Trackers
+    private double lastNetSendTime = 0;
+    private int    lastNetState = 0;
+    private boolean lastNetHooked = false;
 
     // ── TIME CONTROLLER ───────────────────────────────────────────────────────
     // Accessed every frame: TimeController.getInstance().
@@ -115,7 +119,7 @@ public class Window {
     private boolean wasCannonballing = false;
     private boolean wasCharging      = false;   // edge-detect for preload trigger
     private float   pathReadiness    = 0f;      // 0..1 shown in HUD during charging
-
+    private boolean clientSpawnedAtHost = false;
     // ─────────────────────────────────────────────────────────────────────────
 
     public void run() {
@@ -466,19 +470,67 @@ public class Window {
                         GameConfig.seed = network.newSeed;
                         world.clearAllChunks();
                         worldGen.resetSeed(GameConfig.seed);
-                        player.position.y = 100.0f;
+
+                        // We remove the old "player.position.y = 100.0f;" drop
+                        // because we are going to teleport to the host instead.
                         network.seedReceived = false;
                     }
 
-                    network.sendPosition(player.position.x, player.position.y,
-                            player.position.z, camera.yaw, camera.pitch);
+                    // ── TELEPORT CLIENT TO HOST SPAWN ──
+                    if (!network.isHost() && !clientSpawnedAtHost && (network.remoteX != 0f || network.remoteZ != 0f)) {
+                        // Place the client 2 blocks away from the host horizontally to avoid physics collisions,
+                        // and set Y to 250.0f. This forces the preloader to build the chunks around the host
+                        // and drop the client safely onto the terrain surface once loaded.
+                        player.position.set(network.remoteX + 2.0f, 250.0f, network.remoteZ + 2.0f);
+                        player.highestY = 250.0f;
+                        clientSpawnedAtHost = true;
+                    }
 
-                    remotePlayer.targetX   = network.remoteX;
-                    remotePlayer.targetY   = network.remoteY;
-                    remotePlayer.targetZ   = network.remoteZ;
+                    // 1. Detect & Send Discrete State Changes (Instantly)
+                    int currentState = 0;
+                    if (player.abilities.isDashing) currentState = 1;
+                    else if (player.abilities.isCannonballing) currentState = 2;
+                    else if (player.abilities.isRewinding) currentState = 3;
+                    else if (player.isSmashing()) currentState = 4;
+                    else if (player.debugMode) currentState = player.flightController.getMode() == FlightController.FlightMode.SOAR ? 5 : 6;
+
+                    if (currentState != lastNetState) {
+                        network.sendState(currentState);
+                        lastNetState = currentState;
+                    }
+
+                    boolean currentHooked = player.flightController.isHooked();
+                    if (currentHooked != lastNetHooked) {
+                        Vector3f hp = player.flightController.getHookPoint();
+                        network.sendGrapple(currentHooked, hp != null ? hp.x : 0, hp != null ? hp.y : 0, hp != null ? hp.z : 0);
+                        lastNetHooked = currentHooked;
+                    }
+
+                    // 2. Rate-Limit Position Sync to 30Hz (Bandwidth Optimization)
+                    if (now - lastNetSendTime >= (1.0 / 30.0)) {
+                        network.sendPosition(player.position.x, player.position.y, player.position.z,
+                                camera.yaw, camera.pitch, player.getCameraRoll());
+                        lastNetSendTime = now;
+                    }
+
+                    // 3. Update Remote Player state from network
+                    remotePlayer.targetX = network.remoteX;
+                    remotePlayer.targetY = network.remoteY;
+                    remotePlayer.targetZ = network.remoteZ;
                     remotePlayer.targetYaw = network.remoteYaw;
-                    remotePlayer.update(deltaTime);
+                    remotePlayer.targetPitch = network.remotePitch;
+                    remotePlayer.targetRoll = network.remoteRoll;
+                    remotePlayer.targetState = network.remoteState;
+                    remotePlayer.targetHooked = network.remoteHooked;
+                    remotePlayer.targetHookX = network.remoteHookX;
+                    remotePlayer.targetHookY = network.remoteHookY;
+                    remotePlayer.targetHookZ = network.remoteHookZ;
 
+                    // CRITICAL: Update remote player using rawDeltaTime
+                    // This prevents the remote player from stuttering if local time dilation is active
+                    remotePlayer.update(rawDeltaTime);
+
+                    // ... [rest of the polling block: pollBreak, pollChat, etc.] ...
                     int[] brk = network.pollBreak();
                     if (brk != null) {
                         Block brokenBlock = world.getBlock(brk[0], brk[1], brk[2]);
@@ -1458,7 +1510,7 @@ public class Window {
                 worldGen.resetSeed(newSeed);
                 world.clearAllChunks();
                 world.meshingQueue.clear();
-                player.position.set(777f, 250f, 777f);
+                player.position.set(2000f, 250f, 2000f);
                 isPreloading = true;
                 // Close debug menu so the preload screen shows
                 showDebug = false;

@@ -3,6 +3,7 @@ package com.leaf.game.entity;
 import com.leaf.game.render.Mesh;
 import com.leaf.game.render.Shader;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -10,34 +11,64 @@ public class RemotePlayer {
 
     private final Mesh mesh;
 
-    // Actual visual position
     public float x, y, z;
-    public float yaw;
+    public float yaw, pitch, roll;
 
-    // Target position from network
     public float targetX, targetY, targetZ;
-    public float targetYaw;
+    public float targetYaw, targetPitch, targetRoll;
+
+    public int targetState = 0; // Sync'd state
+    public boolean targetHooked = false;
+    public float targetHookX, targetHookY, targetHookZ;
+
+    // Local Caches for Bandwidth-Free Trails
+    public final List<Vector3f> dashTrail = new ArrayList<>();
+    public final List<Vector3f> rewindTrail = new ArrayList<>();
+    private float dashTrailAge = 0f;
+    private float snapshotTimer = 0f;
 
     public RemotePlayer() {
         mesh = buildSteveModel();
     }
 
-    // LERP (Linear Interpolation) smooths out the network stutter!
-    public void update(float deltaTime) {
-        float lerpSpeed = 15.0f; // Higher = snappier, Lower = floatier
-        x += (targetX - x) * lerpSpeed * deltaTime;
-        y += (targetY - y) * lerpSpeed * deltaTime;
-        z += (targetZ - z) * lerpSpeed * deltaTime;
+    public void update(float rawDeltaTime) {
+        float lerpSpeed = 15.0f;
+        x += (targetX - x) * lerpSpeed * rawDeltaTime;
+        y += (targetY - y) * lerpSpeed * rawDeltaTime;
+        z += (targetZ - z) * lerpSpeed * rawDeltaTime;
 
-        // Smooth rotation
-        yaw += (targetYaw - yaw) * lerpSpeed * deltaTime;
+        yaw   += (targetYaw - yaw) * lerpSpeed * rawDeltaTime;
+        pitch += (targetPitch - pitch) * lerpSpeed * rawDeltaTime;
+        roll  += (targetRoll - roll) * lerpSpeed * rawDeltaTime;
+
+        // Populate Dash Trail locally based on synced state
+        if (targetState == 1) { // 1 = Dashing
+            dashTrailAge = 0f;
+            if (dashTrail.isEmpty() || new Vector3f(x, y, z).distance(dashTrail.get(dashTrail.size() - 1)) > 0.25f) {
+                dashTrail.add(new Vector3f(x, y, z));
+                if (dashTrail.size() > 10) dashTrail.remove(0);
+            }
+        } else {
+            dashTrailAge += rawDeltaTime;
+            if (dashTrailAge > 0.45f) dashTrail.clear();
+        }
+
+        // Populate Rewind Trail locally (Record at ~20Hz)
+        snapshotTimer += rawDeltaTime;
+        if (snapshotTimer >= 0.05f) {
+            snapshotTimer = 0f;
+            rewindTrail.add(new Vector3f(x, y, z));
+            if (rewindTrail.size() > 28) rewindTrail.remove(0);
+        }
     }
 
     public void render(Shader shader, Matrix4f projection, Matrix4f view) {
-        // Translate to position, then rotate body based on yaw
+        // Roll & Pitch must be applied to fully reflect skimming, soaring, and cannonball tumbling
         Matrix4f model = new Matrix4f()
                 .translate(x, y, z)
-                .rotateY(yaw);
+                .rotateY(yaw)
+                .rotateX(pitch)
+                .rotateZ(roll);
 
         Matrix4f mvp = new Matrix4f(projection).mul(view).mul(model);
         shader.setUniform("mvp", mvp);

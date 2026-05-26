@@ -13,10 +13,12 @@ public class NetworkSession {
     private static final int PORT = 25566;
 
     public volatile float   remoteX, remoteY, remoteZ;
-    public volatile float   remoteYaw, remotePitch;
-    public volatile boolean connected = false;
+    public volatile float   remoteYaw, remotePitch, remoteRoll;
+    public volatile int     remoteState = 0;
+    public volatile boolean remoteHooked = false;
+    public volatile float   remoteHookX, remoteHookY, remoteHookZ;
 
-    // --- SEED SYNCING ---
+    public volatile boolean connected = false;
     public volatile boolean seedReceived = false;
     public volatile long    newSeed = 0;
 
@@ -24,13 +26,12 @@ public class NetworkSession {
     private final Queue<int[]>  incomingPlaces  = new ConcurrentLinkedQueue<>();
     private final Queue<String> incomingChats   = new ConcurrentLinkedQueue<>();
     private final Queue<int[]>  incomingPickups = new ConcurrentLinkedQueue<>();
-    /** Incoming crater events: int[]{x, y, z, radius} */
     private final Queue<int[]>  incomingCraters = new ConcurrentLinkedQueue<>();
 
     private final boolean isHost;
     private final String  hostIp;
-    private PrintWriter   out;
-    private final Object  writeLock = new Object();
+    private DataOutputStream out;
+    private final Object writeLock = new Object();
 
     public NetworkSession(boolean isHost, String hostIp) {
         this.isHost = isHost;
@@ -48,24 +49,27 @@ public class NetworkSession {
             Socket socket = isHost ? waitForConnection() : connectToHost();
             if (socket == null) return;
 
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            // CRITICAL SYNC FIX: Disable TCP batching to prevent network stutter
+            socket.setTcpNoDelay(true);
+
+            DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             synchronized (writeLock) {
-                out = new PrintWriter(new OutputStreamWriter(socket.getOutputStream()), true);
+                out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
             }
 
             connected = true;
-            System.out.println("[Net] Connected!");
+            System.out.println("[Net] Connected via Binary Protocol!");
 
-            // If we are the host, immediately send our world seed to the client!
-            if (isHost) {
-                send("SEED:" + GameConfig.seed);
+            if (isHost) sendSeed(GameConfig.seed);
+
+            // Binary Read Loop (Zero String-GC overhead)
+            while (true) {
+                byte packetId = in.readByte();
+                handleIncoming(packetId, in);
             }
 
-            String line;
-            while ((line = in.readLine()) != null) {
-                handleIncoming(line);
-            }
-
+        } catch (EOFException e) {
+            System.out.println("[Net] Disconnected.");
         } catch (IOException e) {
             System.err.println("[Net] Connection error: " + e.getMessage());
         }
@@ -74,84 +78,99 @@ public class NetworkSession {
 
     private Socket waitForConnection() throws IOException {
         System.out.println("[Net] Hosting on port " + PORT + " — waiting for friend...");
-        ServerSocket serverSocket = new ServerSocket(PORT, 1);
-        return serverSocket.accept();
+        try (ServerSocket serverSocket = new ServerSocket(PORT, 1)) {
+            return serverSocket.accept();
+        }
     }
 
     private Socket connectToHost() {
         System.out.println("[Net] Connecting to " + hostIp + ":" + PORT + " ...");
-        try {
-            return new Socket(hostIp, PORT);
-        } catch (IOException e) {
-            return null;
-        }
+        try { return new Socket(hostIp, PORT); } catch (IOException e) { return null; }
     }
 
-    private void handleIncoming(String line) {
-        if (line.startsWith("POS:")) {
-            String[] p = line.substring(4).split(",");
-            if (p.length < 5) return;
-            try {
-                remoteX     = Float.parseFloat(p[0]);
-                remoteY     = Float.parseFloat(p[1]);
-                remoteZ     = Float.parseFloat(p[2]);
-                remoteYaw   = Float.parseFloat(p[3]);
-                remotePitch = Float.parseFloat(p[4]);
-            } catch (NumberFormatException ignored) {}
-
-        } else if (line.startsWith("SEED:")) {
-            try {
-                newSeed = Long.parseLong(line.substring(5));
+    private void handleIncoming(byte id, DataInputStream in) throws IOException {
+        switch (id) {
+            case 1: // POS
+                remoteX = in.readFloat(); remoteY = in.readFloat(); remoteZ = in.readFloat();
+                remoteYaw = in.readFloat(); remotePitch = in.readFloat(); remoteRoll = in.readFloat();
+                break;
+            case 2: // STATE
+                remoteState = in.readByte();
+                break;
+            case 3: // GRAPPLE
+                remoteHooked = in.readBoolean();
+                remoteHookX = in.readFloat(); remoteHookY = in.readFloat(); remoteHookZ = in.readFloat();
+                break;
+            case 4: // BREAK
+                incomingBreaks.add(new int[]{in.readInt(), in.readInt(), in.readInt()});
+                break;
+            case 5: // PLACE
+                incomingPlaces.add(new int[]{in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+                break;
+            case 6: // CHAT
+                incomingChats.add(in.readUTF());
+                break;
+            case 7: // PICKUP
+                incomingPickups.add(new int[]{in.readInt(), in.readInt(), in.readInt()});
+                break;
+            case 8: // CRATER
+                incomingCraters.add(new int[]{in.readInt(), in.readInt(), in.readInt(), in.readInt()});
+                break;
+            case 9: // SEED
+                newSeed = in.readLong();
                 seedReceived = true;
-            } catch (NumberFormatException ignored) {}
-
-        } else if (line.startsWith("BREAK:")) {
-            String[] p = line.substring(6).split(",");
-            try { incomingBreaks.add(new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2])}); } catch (Exception ignored) {}
-        } else if (line.startsWith("PLACE:")) {
-            String[] p = line.substring(6).split(",");
-            try { incomingPlaces.add(new int[]{Integer.parseInt(p[0]), Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3])}); } catch (Exception ignored) {}
-        } else if (line.startsWith("CHAT:")) {
-            incomingChats.add(line.substring(5));
-        } else if (line.startsWith("PICKUP:")) {
-            String[] p = line.substring(7).split(",");
-            try {
-                incomingPickups.add(new int[]{
-                        Integer.parseInt(p[0]),
-                        Integer.parseInt(p[1]),
-                        Integer.parseInt(p[2])
-                });
-            } catch (Exception ignored) {}
-        } else if (line.startsWith("CRATER:")) {
-            // Format: CRATER:x,y,z,r
-            String[] p = line.substring(7).split(",");
-            try {
-                incomingCraters.add(new int[]{
-                        Integer.parseInt(p[0]),
-                        Integer.parseInt(p[1]),
-                        Integer.parseInt(p[2]),
-                        Integer.parseInt(p[3])
-                });
-            } catch (Exception ignored) {}
+                break;
         }
-    } // <── closes handleIncoming
-
-    public void sendPosition(float x, float y, float z, float yaw, float pitch) { send("POS:" + x + "," + y + "," + z + "," + yaw + "," + pitch); }
-    public void sendBreak(int x, int y, int z)                                  { send("BREAK:" + x + "," + y + "," + z); }
-    public void sendPlace(int x, int y, int z, Block block)                     { send("PLACE:" + x + "," + y + "," + z + "," + block.ordinal()); }
-    public void sendChat(String message)                                         { send("CHAT:" + message); }
-    public void sendPickup(int x, int y, int z)                                 { send("PICKUP:" + x + "," + y + "," + z); }
-    /** Broadcast a smash crater to the remote peer. */
-    public void sendCrater(int x, int y, int z, int radius)                     { send("CRATER:" + x + "," + y + "," + z + "," + radius); }
-
-    private void send(String message) {
-        synchronized (writeLock) { if (out != null) out.println(message); }
     }
 
-    public int[]   pollBreak()   { return incomingBreaks.poll(); }
-    public int[]   pollPlace()   { return incomingPlaces.poll(); }
-    public String  pollChat()    { return incomingChats.poll(); }
-    public int[]   pollPickup()  { return incomingPickups.poll(); }
-    /** Returns {x, y, z, radius} of the next incoming crater, or null. */
-    public int[]   pollCrater()  { return incomingCraters.poll(); }
+    // --- High-Performance Binary Senders ---
+    public void sendPosition(float x, float y, float z, float yaw, float pitch, float roll) {
+        synchronized (writeLock) {
+            try { if (out == null) return;
+                out.writeByte(1); out.writeFloat(x); out.writeFloat(y); out.writeFloat(z);
+                out.writeFloat(yaw); out.writeFloat(pitch); out.writeFloat(roll); out.flush();
+            } catch (IOException ignored) {}
+        }
+    }
+
+    public void sendState(int state) {
+        synchronized (writeLock) {
+            try { if (out == null) return; out.writeByte(2); out.writeByte((byte)state); out.flush(); } catch (IOException ignored) {}
+        }
+    }
+
+    public void sendGrapple(boolean hooked, float hx, float hy, float hz) {
+        synchronized (writeLock) {
+            try { if (out == null) return; out.writeByte(3); out.writeBoolean(hooked);
+                out.writeFloat(hx); out.writeFloat(hy); out.writeFloat(hz); out.flush();
+            } catch (IOException ignored) {}
+        }
+    }
+
+    public void sendBreak(int x, int y, int z) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(4); out.writeInt(x); out.writeInt(y); out.writeInt(z); out.flush(); } catch (IOException ignored) {} }
+    }
+    public void sendPlace(int x, int y, int z, Block b) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(5); out.writeInt(x); out.writeInt(y); out.writeInt(z); out.writeInt(b.ordinal()); out.flush(); } catch (IOException ignored) {} }
+    }
+    public void sendChat(String msg) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(6); out.writeUTF("CHAT:" + msg); out.flush(); } catch (IOException ignored) {} }
+    }
+    public void sendPickup(int x, int y, int z) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(7); out.writeInt(x); out.writeInt(y); out.writeInt(z); out.flush(); } catch (IOException ignored) {} }
+    }
+    public void sendCrater(int x, int y, int z, int r) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(8); out.writeInt(x); out.writeInt(y); out.writeInt(z); out.writeInt(r); out.flush(); } catch (IOException ignored) {} }
+    }
+    private void sendSeed(long seed) {
+        synchronized (writeLock) { try { if (out == null) return; out.writeByte(9); out.writeLong(seed); out.flush(); } catch (IOException ignored) {} }
+    }
+
+    // Queue Pollers (unchanged)
+    public int[] pollBreak() { return incomingBreaks.poll(); }
+    public int[] pollPlace() { return incomingPlaces.poll(); }
+    public String pollChat() { return incomingChats.poll(); }
+    public int[] pollPickup() { return incomingPickups.poll(); }
+    public int[] pollCrater() { return incomingCraters.poll(); }
+    public boolean isHost() {return isHost; }
 }
