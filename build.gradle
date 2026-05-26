@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 group = 'com.yourname'
@@ -20,30 +21,22 @@ dependencies {
     implementation "org.lwjgl:lwjgl-stb"
     implementation "org.joml:joml:1.10.5"
 
-    // Dynamic multiplatform native bindings check
-    def os = System.getProperty("os.name").toLowerCase()
-    def arch = System.getProperty("os.arch").toLowerCase()
-    if (os.contains("win")) {
-        runtimeOnly "org.lwjgl:lwjgl::natives-windows"
-        runtimeOnly "org.lwjgl:lwjgl-glfw::natives-windows"
-        runtimeOnly "org.lwjgl:lwjgl-opengl::natives-windows"
-
-        // Pulls the correct Windows natives for your friend
-        runtimeOnly "io.github.spair:imgui-java-natives-windows:1.86.12"
-    } else if (os.contains("mac")) {
-        if (arch.contains("aarch64") || arch.contains("arm64")) {
-            runtimeOnly "org.lwjgl:lwjgl::natives-macos-arm64"
-            runtimeOnly "org.lwjgl:lwjgl-glfw::natives-macos-arm64"
-            runtimeOnly "org.lwjgl:lwjgl-opengl::natives-macos-arm64"
-        } else {
-            runtimeOnly "org.lwjgl:lwjgl::natives-macos"
-            runtimeOnly "org.lwjgl:lwjgl-glfw::natives-macos"
-            runtimeOnly "org.lwjgl:lwjgl-opengl::natives-macos"
+    // ── All-platform LWJGL natives ────────────────────────────────────────────
+    // Included unconditionally so the fat JAR (built on any OS) works on all
+    // platforms. LWJGL's SharedLibraryLoader extracts only the right one at
+    // runtime, so the extras just sit unused inside the JAR.
+    def lwjglModules = ["lwjgl", "lwjgl-assimp", "lwjgl-glfw", "lwjgl-openal", "lwjgl-opengl", "lwjgl-stb"]
+    def lwjglPlatforms = ["natives-windows", "natives-macos", "natives-macos-arm64", "natives-linux"]
+    lwjglModules.each { mod ->
+        lwjglPlatforms.each { plat ->
+            runtimeOnly "org.lwjgl:${mod}::${plat}"
         }
-
-        // Pulls the correct macOS natives for you (with universal Apple Silicon / Intel support)
-        runtimeOnly "io.github.spair:imgui-java-natives-macos:1.86.12"
     }
+
+    // ── ImGui natives for all platforms ──────────────────────────────────────
+    runtimeOnly "io.github.spair:imgui-java-natives-windows:1.86.12"
+    runtimeOnly "io.github.spair:imgui-java-natives-macos:1.86.12"
+    runtimeOnly "io.github.spair:imgui-java-natives-linux:1.86.12"
 
     // ImGui Core libraries
     implementation "io.github.spair:imgui-java-binding:1.86.12"
@@ -53,4 +46,15 @@ dependencies {
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+}
+
+// ── Fat JAR — single file that runs everywhere ────────────────────────────────
+shadowJar {
+    archiveBaseName    = 'game'
+    archiveClassifier  = ''   // no "-all" suffix
+    archiveVersion     = ''   // no version in filename → always "game.jar"
+    manifest {
+        attributes 'Main-Class': 'com.leaf.game.Main'
+    }
+    mergeServiceFiles()       // needed for ServiceLoader-based libs
 }

@@ -1,0 +1,53 @@
+name: Build & Release
+
+# Runs on every push to main → always keeps GitHub Releases up to date
+# so friends' play scripts always download the freshest version.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:   # lets you trigger a build manually from the GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to create/update releases
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Build fat JAR
+        run: ./gradlew shadowJar --no-daemon
+
+      # Replace the rolling "latest" release with the freshly built JAR.
+      # The --cleanup-tag flag removes the old git tag so we can recreate it.
+      - name: Delete old latest release (if exists)
+        run: gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish latest release
+        run: |
+          gh release create latest \
+            --title "Latest Build" \
+            --notes "Auto-built from the latest commit on \`main\`. Download **game.jar** OR just run **play-mac.sh** / **play-windows.bat** — they update themselves automatically." \
+            --prerelease \
+            build/libs/game.jar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
