@@ -47,6 +47,11 @@ public class Player {
     // All abilities disabled while debugMode (flight) is active.
     public final AbilityController abilities = new AbilityController(this);
 
+    // ── ATTACKS ───────────────────────────────────────────────────────────────
+    // F=Runic Cleave (melee)   C=Void Shard (ranged bolt)
+    // All attacks disabled while debugMode (flight) is active.
+    public final AttackController attacks = new AttackController(this);
+
     // ── GROUND SMASH ─────────────────────────────────────────────────────────
     private boolean isSmashing = false;
     private boolean lastShift  = false;   // edge detector for smash trigger
@@ -134,6 +139,11 @@ public class Player {
             camera.position.set(position.x, position.y + EYE_HEIGHT, position.z);
             return;
         }
+
+        // ── ATTACK TICK ────────────────────────────────────────────────────────
+        // Runs after abilities (so rewind takeover is already handled above).
+        // Never takes full positional control — attacks are cosmetic + destructive only.
+        attacks.tick(window, camera, world, deltaTime);
 
         float dx = 0f, dy = 0f, dz = 0f;
 
@@ -281,7 +291,7 @@ public class Player {
     }
     public float getCameraFovBoost() {
         if (isSmashing) return -8f;
-        return flightController.getFovBoost() + abilities.getCameraFovBoost();
+        return flightController.getFovBoost() + abilities.getCameraFovBoost() + attacks.getFovBoost();
     }
     public boolean isSmashing() { return isSmashing; }
 

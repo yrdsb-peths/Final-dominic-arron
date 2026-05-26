@@ -1,5 +1,6 @@
 package com.leaf.game.core;
 
+import com.leaf.game.entity.AttackController;
 import com.leaf.game.entity.DroppedItem;
 import com.leaf.game.entity.FlightController;
 import com.leaf.game.entity.Inventory;
@@ -415,6 +416,23 @@ public class Window {
                         // ── SMASH IMPACT HANDLING ──────────────────────────────
                         handleSmashImpact(camera);
 
+                        // ── ATTACK DEBRIS DRAIN ────────────────────────────────
+                        // AttackController queues DebrisSpawn records rather than
+                        // touching droppedItems directly.  Drain them here each frame.
+                        for (AttackController.DebrisSpawn d : player.attacks.pendingDebris) {
+                            droppedItems.add(new DroppedItem(d.bx, d.by, d.bz, d.block, d.vel));
+                        }
+                        player.attacks.pendingDebris.clear();
+
+                        // ── ATTACK SHAKE REQUEST ───────────────────────────────
+                        if (player.attacks.shakeRequest > 0f) {
+                            float req = player.attacks.shakeRequest;
+                            activeShakeDuration  = req * 0.7f;
+                            activeShakeAmplitude = 0.12f + req * 0.25f;
+                            smashShakeTimer      = activeShakeDuration;
+                            player.attacks.shakeRequest = 0f;
+                        }
+
                         // ── CANNONBALL: preload chunks at CHARGE START ─────────
                         // The charge window (~2.5 s) is used as preload time.
                         // On the leading edge of isCharging(), immediately queue
@@ -637,9 +655,22 @@ public class Window {
                 shader.setUniform("timeVignetteStrength", vignetteStrength);
                 shader.setUniform("timeVignetteColor",    vignetteColor);
 
-                // ── ABILITY OVERLAY VIGNETTE ──────────────────────────────────
-                shader.setUniform("overlayVignetteStrength", player.abilities.getOverlayStrength());
-                shader.setUniform("overlayVignetteColor",    player.abilities.getOverlayColor());
+                // ── ABILITY + ATTACK OVERLAY VIGNETTE ────────────────────────
+                // Use whichever overlay is currently stronger so neither system
+                // silently stomps the other during simultaneous effects.
+                float abilityOverlayStr = player.abilities.getOverlayStrength();
+                float attackOverlayStr  = player.attacks.getOverlayStrength();
+                Vector3f compositeOverlayColor;
+                float    compositeOverlayStr;
+                if (attackOverlayStr >= abilityOverlayStr) {
+                    compositeOverlayColor = player.attacks.getOverlayColor();
+                    compositeOverlayStr   = attackOverlayStr;
+                } else {
+                    compositeOverlayColor = player.abilities.getOverlayColor();
+                    compositeOverlayStr   = abilityOverlayStr;
+                }
+                shader.setUniform("overlayVignetteStrength", compositeOverlayStr);
+                shader.setUniform("overlayVignetteColor",    compositeOverlayColor);
                 // Default alpha multiplier (1.0 = no change). Ghost rendering overrides this.
                 shader.setUniform("alphaMultiplier", 1.0f);
 
@@ -652,7 +683,13 @@ public class Window {
                 // Roll is NOT inside getViewMatrix() — that stays clean for frustum
                 // culling. Instead we apply a separate Z-rotation after the view
                 // matrix so the effect is purely cosmetic and fully reversible.
+                //
+                // Attack pitch offset is also non-destructive: we temporarily add
+                // it to camera.pitch, build the view matrix, then remove it.
+                float attackPitch = player.attacks.getPitchOffset();
+                camera.pitch += attackPitch;
                 Matrix4f baseView  = camera.getViewMatrix();
+                camera.pitch -= attackPitch;
                 float    rollAngle = player.getCameraRoll();
                 Matrix4f view;
                 if (Math.abs(rollAngle) > 0.0005f) {
@@ -787,6 +824,24 @@ public class Window {
                         }
                     }
                 }
+                // ── VOID SHARD BOLTS ──────────────────────────────────────────
+                // Each bolt is rendered as a spinning, slightly scaled crystal cube.
+                // Scale grows with charge so a full-power shot looks visibly larger.
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                for (AttackController.ActiveBolt bolt : player.attacks.activeBolts) {
+                    float scale = 0.20f + bolt.chargeF * 0.24f;
+                    Matrix4f boltModel = new Matrix4f()
+                            .translate(bolt.pos.x, bolt.pos.y, bolt.pos.z)
+                            .rotateY(bolt.spinPhase)
+                            .rotateX(bolt.spinPhase * 0.6f)
+                            .rotateZ(bolt.spinPhase * 0.4f)
+                            .scale(scale);
+                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
+                    getItemMesh(Block.CRYSTAL_AMETHYST).render();
+                }
+                glDisable(GL_BLEND);
+
                 // ── ITEMS ─────────────────────────────────────────────────────
                 for (DroppedItem item : droppedItems) {
                     Mesh itemMesh = getItemMesh(item.blockType);

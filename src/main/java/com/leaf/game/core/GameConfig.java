@@ -151,4 +151,25 @@ public class GameConfig {
     public static float blinkRange       = 22f;   // blocks
     public static float blinkCooldown    = 2.0f;
     public static float blinkFlashDecay  = 0.30f; // seconds for white flash to fade
+
+    // ── MELEE ATTACK (Runic Cleave — F key) ──────────────────────────────────
+    // Windup: camera lifts, FOV tightens, gold vignette builds (0.14 s)
+    // Strike: instant arc shatter, camera bucks, white flash, screen shake
+    // Recoil: pitch + FOV decay back to neutral (0.22 s)
+    public static float meleeWindupDuration  = 0.14f;  // seconds
+    public static float meleeRecoilDuration  = 0.22f;  // seconds
+    public static float meleeCooldown        = 0.80f;  // seconds between strikes
+    public static float meleeShakeStrength   = 0.13f;  // shake timer length (s)
+
+    // ── RANGED ATTACK (Void Shard — C key) ───────────────────────────────────
+    // Hold C to charge, release fires a straight crystal bolt (no gravity).
+    // Impact triggers sphere explosion + crystal debris burst.
+    public static float voidShardMaxCharge    = 1.2f;   // seconds to full charge
+    public static float voidShardMinSpeed     = 45f;    // blocks/s at zero charge
+    public static float voidShardMaxSpeed     = 82f;    // blocks/s at full charge
+    public static float voidShardLifetime     = 4.0f;   // seconds before despawn
+    public static float voidShardMinRadius    = 1.5f;   // explosion radius (blocks) at 0 charge
+    public static float voidShardMaxRadius    = 3.2f;   // explosion radius at full charge
+    public static float voidShardCooldown     = 1.6f;   // seconds
+    public static float voidShardShakeStrength = 0.18f; // base shake factor (scaled by chargeF)
 }
