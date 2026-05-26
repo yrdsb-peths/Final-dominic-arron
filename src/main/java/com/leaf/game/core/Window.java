@@ -690,9 +690,6 @@ public class Window {
                 // ── PASS 2: TRANSPARENT ───────────────────────────────────────
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                // Disable depth writes for transparent geometry so water faces
-                // don't clobber the depth buffer and cause surface flickering.
-                glDepthMask(false);
 
                 for (int dx = -R; dx <= R; dx++) {
                     for (int dz = -R; dz <= R; dz++) {
@@ -705,7 +702,6 @@ public class Window {
                         }
                     }
                 }
-                glDepthMask(true);
                 glDisable(GL_BLEND);
                 // ── RENDER GRAPPLE CABLE & LASER SIGHT ─────────────────────────
                 FlightController fc = player.flightController;

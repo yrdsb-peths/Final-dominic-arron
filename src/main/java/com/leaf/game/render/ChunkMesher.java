@@ -251,9 +251,6 @@ public class ChunkMesher {
     private static boolean shouldDrawFace(Block current, Block neighbor) {
         if (neighbor == Block.AIR) return true;
         if (current == neighbor) return false;
-        // Don't draw a solid face toward a liquid — the water mesh provides the
-        // visible boundary, and having both faces at the same Z causes flickering.
-        if (current.isOpaque() && neighbor.isLiquid()) return false;
         return !neighbor.isOpaque();
     }
 
