@@ -47,7 +47,6 @@ jobs:
           gh release create latest \
             --title "Latest Build" \
             --notes "Auto-built from the latest commit on \`main\`. Download **game.jar** OR just run **play-mac.sh** / **play-windows.bat** — they update themselves automatically." \
-            --prerelease \
             build/libs/game.jar
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
