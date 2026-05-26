@@ -52,6 +52,14 @@ public class Player {
     // All attacks disabled while debugMode (flight) is active.
     public final AttackController attacks = new AttackController(this);
 
+    // ── MANHATTAN TRANSFER (Stand / Drone — X / TAB / LMB) ───────────────────
+    // Ticked BEFORE abilities so it can take full positional control first.
+    public final StandController stand = new StandController(this);
+
+    // ── MINATO'S SEAL (H / B / N) ────────────────────────────────────────────
+    // Ticked after attacks; never takes full positional control.
+    public final SealController seals = new SealController(this);
+
     // ── GROUND SMASH ─────────────────────────────────────────────────────────
     private boolean isSmashing = false;
     private boolean lastShift  = false;   // edge detector for smash trigger
@@ -132,6 +140,14 @@ public class Player {
 
         flightController.decayEffects(deltaTime);
 
+        // ── STAND TICK (Manhattan Transfer) ───────────────────────────────────
+        // Must run before abilities so that drone-perspective takes priority.
+        // Returns true when the player is piloting the drone — body is frozen.
+        if (stand.tick(window, camera, world, deltaTime)) {
+            // Body is frozen; Window will use stand.standCamera this frame.
+            return;
+        }
+
         // ── ABILITY TICK ───────────────────────────────────────────────────────
         // Runs before physics. Returns true when ability has full positional
         // control (Rewind) — caller skips the physics block entirely.
@@ -144,6 +160,11 @@ public class Player {
         // Runs after abilities (so rewind takeover is already handled above).
         // Never takes full positional control — attacks are cosmetic + destructive only.
         attacks.tick(window, camera, world, deltaTime);
+
+        // ── SEAL TICK (Minato's Seal) ──────────────────────────────────────────
+        // Runs after attacks; projectiles and teleport are handled here.
+        // Never takes full positional control.
+        seals.tick(window, camera, world, deltaTime);
 
         float dx = 0f, dy = 0f, dz = 0f;
 

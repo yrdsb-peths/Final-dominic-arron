@@ -2,10 +2,14 @@ package com.leaf.game.core;
 
 import com.leaf.game.entity.AttackController;
 import com.leaf.game.entity.DroppedItem;
+import com.leaf.game.entity.Enemy;
+import com.leaf.game.entity.EnemyManager;
 import com.leaf.game.entity.FlightController;
 import com.leaf.game.entity.Inventory;
 import com.leaf.game.entity.Player;
 import com.leaf.game.entity.RemotePlayer;
+import com.leaf.game.entity.SealController;
+import com.leaf.game.entity.StandController;
 import com.leaf.game.net.NetworkSession;
 import com.leaf.game.render.Mesh;
 import com.leaf.game.render.Shader;
@@ -16,6 +20,7 @@ import com.leaf.game.world.Block;
 import com.leaf.game.world.Chunk;
 import com.leaf.game.world.World;
 import com.leaf.game.world.gen.WorldGen;
+import com.leaf.game.util.Camera;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.lwjgl.glfw.*;
@@ -81,6 +86,11 @@ public class Window {
     private final List<DroppedItem> droppedItems = new ArrayList<>();
     private final Map<Block, Mesh>  itemMeshes   = new HashMap<>();
 
+    // ── ENEMY SYSTEM ──────────────────────────────────────────────────────────
+    private EnemyManager enemyManager;
+    /** Edge-detect for P key to spawn enemies. */
+    private boolean lastP = false;
+
     private float   breakProgress = 0.0f;
     private int     breakX, breakY, breakZ;
     private boolean breakingActive = false;
@@ -134,6 +144,8 @@ public class Window {
         // exit cleanly.  Without this, non-daemon worker threads kept the Java
         // process alive indefinitely after the window was closed.
         if (world != null) world.shutdown();
+        // Free all GPU model/texture assets before the GL context is destroyed.
+        com.leaf.game.render.AssetManager.get().cleanup();
         System.exit(0);
     }
 
@@ -202,8 +214,14 @@ public class Window {
                 return;
 
             if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                breakingActive = (action == GLFW_PRESS || action == GLFW_REPEAT);
-                if (action == GLFW_RELEASE) breakProgress = 0.0f;
+                // While piloting the stand drone OR auto-aiming at an enemy, LMB is
+                // consumed by the stand — block normal block-breaking.
+                boolean standConsumedLMB = player.stand.isInStandPerspective()
+                        || player.stand.autoAimedThisFrame;
+                if (!standConsumedLMB) {
+                    breakingActive = (action == GLFW_PRESS || action == GLFW_REPEAT);
+                    if (action == GLFW_RELEASE) breakProgress = 0.0f;
+                }
             }
 
             if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
@@ -241,6 +259,12 @@ public class Window {
             float dx = (float)(xpos - lastMouseX[0]);
             float dy = (float)(ypos - lastMouseY[0]);
             lastMouseX[0] = xpos; lastMouseY[0] = ypos;
+
+            // Stand perspective: route look to stand's own camera, not the player.
+            if (player.stand.isInStandPerspective()) {
+                player.stand.applyMouseLook(dx, dy);
+                return;
+            }
 
             // Smashing/Rewinding: camera auto-driven, block mouse entirely.
             // Charging: camera locked to aim direction — the system needs this
@@ -286,6 +310,10 @@ public class Window {
         this.world    = new World();
         this.worldGen = new WorldGen();
         this.noiseVis = new NoiseVisualizer(worldGen);
+
+        // ── ENEMY SYSTEM ─────────────────────────────────────────────────────
+        this.enemyManager = new EnemyManager();
+        player.stand.setEnemyManager(enemyManager);
 
         TimeController tc = TimeController.getInstance();
 
@@ -432,6 +460,55 @@ public class Window {
                             smashShakeTimer      = activeShakeDuration;
                             player.attacks.shakeRequest = 0f;
                         }
+
+                        // ── STAND DEBRIS DRAIN (Manhattan Transfer) ────────────
+                        for (AttackController.DebrisSpawn d : player.stand.pendingDebris) {
+                            droppedItems.add(new DroppedItem(d.bx, d.by, d.bz, d.block, d.vel));
+                        }
+                        player.stand.pendingDebris.clear();
+
+                        // ── STAND SHAKE REQUEST ────────────────────────────────
+                        if (player.stand.shakeRequest > 0f) {
+                            float req = player.stand.shakeRequest;
+                            activeShakeDuration  = req * 0.7f;
+                            activeShakeAmplitude = 0.12f + req * 0.25f;
+                            smashShakeTimer      = Math.max(smashShakeTimer, activeShakeDuration);
+                            player.stand.shakeRequest = 0f;
+                        }
+
+                        // ── ENEMY SYSTEM UPDATE ────────────────────────────────
+                        // Drain explosion events from attack and stand bolts.
+                        for (float[] ev : player.attacks.pendingExplosions) {
+                            enemyManager.processExplosion(ev);
+                        }
+                        player.attacks.pendingExplosions.clear();
+
+                        for (float[] ev : player.stand.pendingExplosions) {
+                            enemyManager.processExplosion(ev);
+                        }
+                        player.stand.pendingExplosions.clear();
+
+                        for (float[] ev : player.attacks.pendingMeleeArcs) {
+                            enemyManager.processMeleeArc(ev);
+                        }
+                        player.attacks.pendingMeleeArcs.clear();
+
+                        // Update all enemies (gravity, death fade, etc.)
+                        enemyManager.update(deltaTime, world);
+
+                        // P key — spawn test enemy at crosshair hit point
+                        boolean pHeld = glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS;
+                        if (pHeld && !lastP) {
+                            RaycastResult hit = player.getTargetBlock(camera, world);
+                            if (hit != null && hit.hit) {
+                                // Spawn on top of the targeted surface block
+                                enemyManager.spawnAt(
+                                        hit.placeX + 0.5f,
+                                        hit.placeY,
+                                        hit.placeZ + 0.5f);
+                            }
+                        }
+                        lastP = pHeld;
 
                         // ── CANNONBALL: preload chunks at CHARGE START ─────────
                         // The charge window (~2.5 s) is used as preload time.
@@ -669,34 +746,64 @@ public class Window {
                     compositeOverlayColor = player.abilities.getOverlayColor();
                     compositeOverlayStr   = abilityOverlayStr;
                 }
+                // ── SEAL TELEPORT OVERLAY ─────────────────────────────────
+                // White-ish flash when the player zips to a seal.
+                if (player.seals.teleportFlash > 0f) {
+                    float flashStr = (player.seals.teleportFlash / GameConfig.sealTeleportFlash) * 0.55f;
+                    if (flashStr > compositeOverlayStr) {
+                        compositeOverlayStr   = flashStr;
+                        compositeOverlayColor = new Vector3f(0.95f, 0.98f, 1.0f);
+                    }
+                }
+
                 shader.setUniform("overlayVignetteStrength", compositeOverlayStr);
                 shader.setUniform("overlayVignetteColor",    compositeOverlayColor);
                 // Default alpha multiplier (1.0 = no change). Ghost rendering overrides this.
                 shader.setUniform("alphaMultiplier", 1.0f);
+                // Default: no texture sampling. Set to 1 + bind texture for ModelMesh rendering.
+                shader.setUniform("useTexture", 0);
 
                 // ── FLIGHT CAMERA EFFECTS ─────────────────────────────────────
-                // Set dynamic FOV from flight controller boost
-                float fovBoost = player.getCameraFovBoost();
-                camera.dynamicFov = (fovBoost > 0.1f) ? GameConfig.fov + fovBoost : -1f;
+                // Set dynamic FOV from flight controller boost (player camera only).
+                // Suppressed when piloting the stand drone.
+                boolean inStandView = player.stand.isInStandPerspective();
+                if (!inStandView) {
+                    float fovBoost = player.getCameraFovBoost();
+                    camera.dynamicFov = (fovBoost > 0.1f) ? GameConfig.fov + fovBoost : -1f;
+                }
 
                 // ── VIEW MATRIX + ROLL ────────────────────────────────────────
-                // Roll is NOT inside getViewMatrix() — that stays clean for frustum
-                // culling. Instead we apply a separate Z-rotation after the view
-                // matrix so the effect is purely cosmetic and fully reversible.
-                //
-                // Attack pitch offset is also non-destructive: we temporarily add
-                // it to camera.pitch, build the view matrix, then remove it.
-                float attackPitch = player.attacks.getPitchOffset();
-                camera.pitch += attackPitch;
-                Matrix4f baseView  = camera.getViewMatrix();
-                camera.pitch -= attackPitch;
-                float    rollAngle = player.getCameraRoll();
+                // When piloting the drone, all cosmetic effects are suppressed:
+                // no roll, no screen shake, no attack pitch — clean drone view only.
+                // All rendering uses standCamera so the player sees through the drone.
+                Matrix4f baseView;
+                float    rollAngle;
+                Matrix4f projection;
+                Vector3f shakeOffset;
+
+                if (inStandView) {
+                    Camera sc   = player.stand.standCamera;
+                    sc.dynamicFov = -1f; // standard FOV while piloting
+                    baseView    = sc.getViewMatrix();
+                    rollAngle   = 0f;
+                    projection  = sc.getProjectionMatrix();
+                    shakeOffset = new Vector3f(0f);
+                } else {
+                    // Attack pitch offset is non-destructive: add, build, subtract.
+                    float attackPitch = player.attacks.getPitchOffset();
+                    camera.pitch += attackPitch;
+                    baseView = camera.getViewMatrix();
+                    camera.pitch -= attackPitch;
+                    rollAngle   = player.getCameraRoll();
+                    projection  = camera.getProjectionMatrix();
+                    shakeOffset = computeShakeOffset(rawDeltaTime);
+                }
+
                 Matrix4f view;
                 if (Math.abs(rollAngle) > 0.0005f) {
                     // Rotate around the camera's forward axis (Z in view space)
                     // by applying rotateZ BEFORE the view matrix (in world space
                     // this means we tilt the camera around its own look axis).
-                    // We use a roll matrix applied in VIEW space: mul on the right.
                     Matrix4f rollMat = new Matrix4f().rotateZ(rollAngle);
                     view = rollMat.mul(baseView);
                 } else {
@@ -706,7 +813,6 @@ public class Window {
                 // ── SCREEN SHAKE ──────────────────────────────────────────────
                 // Damped sinusoidal offset on camera position for smashShakeDuration.
                 // We temporarily move camera.position, build the MVP, then restore it.
-                Vector3f shakeOffset = computeShakeOffset(rawDeltaTime);
                 if (shakeOffset.lengthSquared() > 0f) {
                     camera.position.add(shakeOffset);
                     view = camera.getViewMatrix(); // recompute with shaken position
@@ -714,8 +820,6 @@ public class Window {
                         view = new Matrix4f().rotateZ(rollAngle).mul(view);
                     }
                 }
-
-                Matrix4f projection = camera.getProjectionMatrix();
 
                 // Restore camera position after shake (BEFORE any other use)
                 if (shakeOffset.lengthSquared() > 0f) {
@@ -857,6 +961,219 @@ public class Window {
                 }
                 glDisable(GL_BLEND);
 
+                // ── STAND DRONE + BOLTS (Manhattan Transfer) ─────────────────
+                if (player.stand.isDeployed()) {
+                    float bob      = (float)Math.sin(player.stand.bobPhase) * GameConfig.standHoverBob;
+                    float droneSpin = (float)(glfwGetTime() * 1.5);
+                    Vector3f sp    = player.stand.standPos;
+
+                    // Render drone using AssetManager model (or procedural saucer fallback)
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    shader.setUniform("alphaMultiplier", 1.0f);
+                    Matrix4f droneModel = new Matrix4f()
+                            .translate(sp.x, sp.y + bob, sp.z)
+                            .rotateY(droneSpin)
+                            .scale(0.55f);
+                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
+                    // Optionally bind texture if available
+                    com.leaf.game.render.Texture standTex = com.leaf.game.render.AssetManager.get().getTexture("stand");
+                    if (standTex != null) {
+                        shader.setUniform("useTexture", 1);
+                        standTex.bind();
+                    }
+                    com.leaf.game.render.AssetManager.get().getModel("stand").render();
+                    if (standTex != null) {
+                        shader.setUniform("useTexture", 0);
+                    }
+
+                    // Blocked-LOS warning: overlay orange flash on drone when shot is blocked
+                    float blockedF = player.stand.getBlockedFlash();
+                    if (blockedF > 0f) {
+                        float alpha = (blockedF / GameConfig.standBlockedFlashTime) * 0.55f;
+                        shader.setUniform("alphaMultiplier", alpha);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
+                        getItemMesh(Block.CRATER_BLOOM).render(); // warm orange tint
+                    }
+                    glDisable(GL_BLEND);
+
+                    // Render stand redirect bolts as spinning CRYSTAL_CITRINE cubes
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    for (StandController.StandBolt bolt : player.stand.activeBolts) {
+                        Matrix4f boltModel = new Matrix4f()
+                                .translate(bolt.pos.x, bolt.pos.y, bolt.pos.z)
+                                .rotateY(bolt.spinPhase)
+                                .rotateX(bolt.spinPhase * 0.6f)
+                                .rotateZ(bolt.spinPhase * 0.4f)
+                                .scale(0.18f);
+                        shader.setUniform("alphaMultiplier", 1.0f);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
+                        getItemMesh(Block.CRYSTAL_CITRINE).render();
+                    }
+
+                    glDisable(GL_BLEND);
+                }
+
+                // ── SEALS (Minato's Seal) ────────────────────────────────────
+                // In-flight seal projectiles
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                for (SealController.SealProjectile proj : player.seals.inFlightSeals) {
+                    Matrix4f projModel = new Matrix4f()
+                            .translate(proj.pos.x, proj.pos.y, proj.pos.z)
+                            .rotateY(proj.spinPhase)
+                            .scale(0.15f);
+                    shader.setUniform("alphaMultiplier", 1.0f);
+                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(projModel));
+                    getItemMesh(Block.CRYSTAL_CITRINE).render();
+                }
+                // ── STAND DRONE + BOLTS (Manhattan Transfer) ─────────────────
+                if (player.stand.isDeployed()) {
+                    float bob      = (float)Math.sin(player.stand.bobPhase) * GameConfig.standHoverBob;
+                    float droneSpin = (float)(glfwGetTime() * 1.5);
+                    Vector3f sp    = player.stand.standPos;
+
+                    // ── FIX: Only render the physical drone body if we are NOT piloting it
+                    if (!inStandView) {
+                        // Render drone using AssetManager model (or procedural saucer fallback)
+                        glEnable(GL_BLEND);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        shader.setUniform("alphaMultiplier", 1.0f);
+                        Matrix4f droneModel = new Matrix4f()
+                                .translate(sp.x, sp.y + bob, sp.z)
+                                .rotateY(droneSpin)
+                                .scale(0.55f);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
+
+                        com.leaf.game.render.Texture standTex = com.leaf.game.render.AssetManager.get().getTexture("stand");
+                        if (standTex != null) {
+                            shader.setUniform("useTexture", 1);
+                            standTex.bind();
+                        }
+                        com.leaf.game.render.AssetManager.get().getModel("stand").render();
+                        if (standTex != null) {
+                            shader.setUniform("useTexture", 0);
+                        }
+
+                        // Blocked-LOS warning: overlay orange flash on drone when shot is blocked
+                        float blockedF = player.stand.getBlockedFlash();
+                        if (blockedF > 0f) {
+                            float alpha = (blockedF / GameConfig.standBlockedFlashTime) * 0.55f;
+                            shader.setUniform("alphaMultiplier", alpha);
+                            shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
+                            getItemMesh(Block.CRATER_BLOOM).render(); // warm orange tint
+                        }
+                        glDisable(GL_BLEND);
+                    }
+
+                    // Render stand redirect bolts as spinning CRYSTAL_CITRINE cubes
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    for (StandController.StandBolt bolt : player.stand.activeBolts) {
+                        Matrix4f boltModel = new Matrix4f()
+                                .translate(bolt.pos.x, bolt.pos.y, bolt.pos.z)
+                                .rotateY(bolt.spinPhase)
+                                .rotateX(bolt.spinPhase * 0.6f)
+                                .rotateZ(bolt.spinPhase * 0.4f)
+                                .scale(0.18f);
+                        shader.setUniform("alphaMultiplier", 1.0f);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
+                        getItemMesh(Block.CRYSTAL_CITRINE).render();
+                    }
+                    glDisable(GL_BLEND);
+                }
+
+                // (Note: The old 3D Pointer code that was here has been cleanly removed
+                // because we are using your awesome 2D UI Edge Arrow now!)
+                // because we are using your awesome 2D UI Edge Arrow now!)
+                // Placed seals — Pass A: normal depth (visible when unobstructed)
+                if (!player.seals.placedSeals.isEmpty()) {
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    com.leaf.game.render.Texture sealTex = com.leaf.game.render.AssetManager.get().getTexture("seal");
+                    if (sealTex != null) { shader.setUniform("useTexture", 1); sealTex.bind(); }
+                    for (SealController.SealEntry seal : player.seals.placedSeals) {
+                        float pulse = 0.85f + 0.15f * (float)Math.sin(seal.pulsePhase);
+                        float scale = seal.targeted
+                                ? 0.45f * GameConfig.sealTargetedScale
+                                : 0.45f;
+                        Matrix4f sealModel = new Matrix4f()
+                                .translate(seal.position.x, seal.position.y, seal.position.z)
+                                .rotateY(seal.spinPhase)
+                                .scale(scale * pulse);
+                        shader.setUniform("alphaMultiplier", 1.0f);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(sealModel));
+                        com.leaf.game.render.AssetManager.get().getModel("seal").render();
+                    }
+                    if (sealTex != null) { shader.setUniform("useTexture", 0); }
+                    glDisable(GL_BLEND);
+
+                    // Placed seals — Pass B: through-wall ghost (depth-test OFF)
+                    // This lets the player always see their seals even through terrain.
+                    glDisable(GL_DEPTH_TEST);
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    for (SealController.SealEntry seal : player.seals.placedSeals) {
+                        float ghostAlpha = GameConfig.sealThroughWallAlpha
+                                * (seal.targeted ? 1.0f : 0.7f);
+                        float scale = seal.targeted
+                                ? 0.28f * GameConfig.sealTargetedScale
+                                : 0.28f;
+                        Matrix4f sealModel = new Matrix4f()
+                                .translate(seal.position.x, seal.position.y, seal.position.z)
+                                .rotateY(seal.spinPhase)
+                                .scale(scale);
+                        shader.setUniform("alphaMultiplier", ghostAlpha);
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(sealModel));
+                        com.leaf.game.render.AssetManager.get().getModel("seal").render();
+                    }
+                    glDisable(GL_BLEND);
+                    glEnable(GL_DEPTH_TEST);
+                    shader.setUniform("alphaMultiplier", 1.0f);
+                }
+
+                // ── ENEMIES ───────────────────────────────────────────────────
+                // Render each enemy as a red-tinted player-capsule model.
+                // Dead enemies that still have a hit-flash timer get a bright flash.
+                if (!enemyManager.getEnemies().isEmpty()) {
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    com.leaf.game.render.ModelMesh enemyModel =
+                            com.leaf.game.render.AssetManager.get().getModel("player");
+                    for (Enemy enemy : enemyManager.getEnemies()) {
+                        float flashF = enemy.hitFlashTimer > 0f
+                                ? (enemy.hitFlashTimer / 0.18f)
+                                : 0f;
+                        // Alpha: alive = 1.0, dead but still flashing → fade out
+                        float alpha = enemy.alive ? 1.0f : flashF;
+                        if (alpha < 0.02f) continue;
+
+                        shader.setUniform("alphaMultiplier", alpha);
+                        // Hit-flash: white for alive, brighter red for dead
+                        if (flashF > 0f) {
+                            shader.setUniform("overlayVignetteStrength", flashF * 0.55f);
+                            shader.setUniform("overlayVignetteColor",
+                                    new Vector3f(1.0f, 0.2f, 0.15f));
+                        }
+
+                        Matrix4f enemyMat = new Matrix4f()
+                                .translate(enemy.position.x, enemy.position.y, enemy.position.z)
+                                .scale(0.5f);
+                        shader.setUniform("mvp",
+                                new Matrix4f(projection).mul(view).mul(enemyMat));
+                        enemyModel.render();
+
+                        // Restore overlay after per-enemy flash
+                        if (flashF > 0f) {
+                            shader.setUniform("overlayVignetteStrength", 0f);
+                            shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
+                        }
+                    }
+                    shader.setUniform("alphaMultiplier", 1.0f);
+                    glDisable(GL_BLEND);
+                }
+
                 // ── ITEMS ─────────────────────────────────────────────────────
                 for (DroppedItem item : droppedItems) {
                     Mesh itemMesh = getItemMesh(item.blockType);
@@ -891,7 +1208,7 @@ public class Window {
                 if (isPreloading) {
                     renderPreloadProgress(ww[0], wh[0]);
                 } else {
-                    renderHUD(ww[0], wh[0]);
+                    renderHUD(camera, ww[0], wh[0]);
                     renderTargetCracks(camera, ww[0], wh[0]);
                     if (showDebug)       renderDebugMenu();
                     if (showNoiseViewer) noiseVis.renderWindow(player);
@@ -1180,10 +1497,99 @@ public class Window {
         if (breakProgress > 0.7f) { drawCrack.accept(0, 2); drawCrack.accept(5, 7); }
     }
 
-    private void renderHUD(float screenW, float screenH) {
+    private void renderHUD(Camera camera, float screenW, float screenH) {
         var draw = ImGui.getForegroundDrawList();
         float cx = screenW / 2.0f, cy = screenH / 2.0f;
+        // ── MANHATTAN TRANSFER 2D OFF-SCREEN INDICATOR ────────────────────────
+        if (player.stand.isDeployed() && !player.stand.isInStandPerspective()) {
 
+            // 1. Use the Matrix only to check if the drone is visible on-screen
+            Matrix4f viewProj = new Matrix4f(camera.getProjectionMatrix()).mul(camera.getViewMatrix());
+            Vector3f dronePos = player.stand.standPos;
+
+            org.joml.Vector4f clipPos = new org.joml.Vector4f(dronePos.x, dronePos.y, dronePos.z, 1.0f).mul(viewProj);
+            boolean inFront = clipPos.w > 0.0f;
+            float ndcX = clipPos.x / Math.abs(clipPos.w);
+            float ndcY = clipPos.y / Math.abs(clipPos.w);
+            boolean onScreen = inFront && Math.abs(ndcX) <= 1.0f && Math.abs(ndcY) <= 1.0f;
+
+            // 2. Draw the edge arrow ONLY if it is off-screen
+            if (!onScreen) {
+                // To avoid matrix flipping bugs, we use simple Dot Products with
+                // the camera's local axes to find the true, stable direction.
+                Vector3f toDrone = new Vector3f(dronePos).sub(camera.position).normalize();
+                Vector3f right   = camera.getRight();
+                // Cross product: Right x Forward = Local Up Vector
+                Vector3f up      = new Vector3f(right).cross(camera.getLookDirection()).normalize();
+
+                // Screen X grows right. Screen Y grows DOWN (so we invert Y).
+                float dirX = toDrone.dot(right);
+                float dirY = -toDrone.dot(up);
+
+                float angle = (float) Math.atan2(dirY, dirX);
+                float radius = Math.min(cx, cy) * 0.85f;
+
+                float indicatorX = cx + (float)Math.cos(angle) * radius;
+                float indicatorY = cy + (float)Math.sin(angle) * radius;
+
+                // 3. Draw Custom "Tag" Shape (Made slightly larger)
+                float L = 46f;      // Total length of the shape
+                float W = 32f;      // Total width
+                float tipL = 16f;   // Length of the pointy triangle tip
+
+                float[][] pts = {
+                        { L/2, 0 },               // 0: Tip
+                        { L/2 - tipL, W/2 },      // 1: Top Right corner
+                        { -L/2, W/2 },            // 2: Top Left corner
+                        { -L/2, -W/2 },           // 3: Bottom Left corner
+                        { L/2 - tipL, -W/2 }      // 4: Bottom Right corner
+                };
+
+                // Rotate and translate vertices to the edge of the screen
+                float cosA = (float)Math.cos(angle);
+                float sinA = (float)Math.sin(angle);
+                for(int i = 0; i < 5; i++) {
+                    float px = pts[i][0];
+                    float py = pts[i][1];
+                    float rotX = px * cosA - py * sinA;
+                    float rotY = px * sinA + py * cosA;
+                    pts[i][0] = indicatorX + rotX;
+                    pts[i][1] = indicatorY + rotY;
+                }
+
+                // Colors
+                int goldFill = ImGui.colorConvertFloat4ToU32(1.0f, 0.85f, 0.15f, 0.95f);
+                int outline  = ImGui.colorConvertFloat4ToU32(0.1f, 0.1f, 0.1f, 1.0f);
+                int redAlert = ImGui.colorConvertFloat4ToU32(1.0f, 0.15f, 0.15f, 1.0f);
+
+                // Fill the shape
+                draw.addQuadFilled(pts[1][0], pts[1][1], pts[2][0], pts[2][1], pts[3][0], pts[3][1], pts[4][0], pts[4][1], goldFill);
+                draw.addTriangleFilled(pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[4][0], pts[4][1], goldFill);
+
+                // Draw thick outline
+                float thick = 2.5f;
+                draw.addLine(pts[0][0], pts[0][1], pts[1][0], pts[1][1], outline, thick);
+                draw.addLine(pts[1][0], pts[1][1], pts[2][0], pts[2][1], outline, thick);
+                draw.addLine(pts[2][0], pts[2][1], pts[3][0], pts[3][1], outline, thick);
+                draw.addLine(pts[3][0], pts[3][1], pts[4][0], pts[4][1], outline, thick);
+                draw.addLine(pts[4][0], pts[4][1], pts[0][0], pts[0][1], outline, thick);
+
+                // 4. Draw large, bright RED "!"
+                float textOffsetX = -tipL / 2.0f;
+                float centerIconX = indicatorX + textOffsetX * cosA;
+                float centerIconY = indicatorY + textOffsetX * sinA;
+
+                // Draw exclamation mark using filled rectangles (bypassing text limits so it's massive)
+                // Top bar
+                draw.addRectFilled(centerIconX - 2.5f, centerIconY - 9f, centerIconX + 2.5f, centerIconY + 3f, redAlert);
+                // Bottom dot
+                draw.addRectFilled(centerIconX - 2.5f, centerIconY + 6f, centerIconX + 2.5f, centerIconY + 11f, redAlert);
+
+                // Outline the exclamation mark so it pops beautifully inside the gold box
+                draw.addRect(centerIconX - 2.5f, centerIconY - 9f, centerIconX + 2.5f, centerIconY + 3f, outline, 0f, 0, 1.5f);
+                draw.addRect(centerIconX - 2.5f, centerIconY + 6f, centerIconX + 2.5f, centerIconY + 11f, outline, 0f, 0, 1.5f);
+            }
+        }
         // Crosshair
         int white = ImGui.colorConvertFloat4ToU32(1, 1, 1, 0.9f);
         int black = ImGui.colorConvertFloat4ToU32(0, 0, 0, 0.6f);
@@ -1191,6 +1597,9 @@ public class Window {
         draw.addLine(cx, cy - 11, cx, cy + 11, black, 3.0f);
         draw.addLine(cx - 10, cy, cx + 10, cy, white, 1.5f);
         draw.addLine(cx, cy - 10, cx, cy + 10, white, 1.5f);
+
+        // Health bar and hotbar — hidden while piloting the drone
+        if (!player.stand.isInStandPerspective()) {
 
         // Health bar
         float hpWidth = 200f, hpHeight = 15f;
@@ -1234,6 +1643,7 @@ public class Window {
                 draw.addText(x + slotSize - 15, startY + slotSize - 19, white, countStr);
             }
         }
+        } // end !isInStandPerspective (health bar + hotbar guard)
 
         // ── FLIGHT MODE INDICATOR ─────────────────────────────────────────────
         if (player.debugMode) {
@@ -1353,6 +1763,148 @@ public class Window {
             draw.addText(cx - 35, cy - 90, black, "▼ SMASHING ▼");
             draw.addText(cx - 36, cy - 91,
                     ImGui.colorConvertFloat4ToU32(1.0f, 0.3f, 0.1f, 1.0f), "▼ SMASHING ▼");
+        }
+
+        // ── STAND PERSPECTIVE OVERLAY ────────────────────────────────────────
+        // When piloting the drone: replace most HUD with a clean drone cockpit view.
+        if (player.stand.isInStandPerspective()) {
+            // Dim border vignette to indicate we are in drone mode
+            int vigCol  = ImGui.colorConvertFloat4ToU32(0.05f, 0.1f, 0.35f, 0.55f);
+            float vEdge = 80f;
+            draw.addRectFilled(0f,                screenH - vEdge, screenW, screenH,          vigCol);
+            draw.addRectFilled(0f,                0f,               screenW, vEdge,            vigCol);
+            draw.addRectFilled(0f,                0f,               vEdge,   screenH,          vigCol);
+            draw.addRectFilled(screenW - vEdge,   0f,               screenW, screenH,          vigCol);
+
+            // ── Stand health bar ──────────────────────────────────────────────
+            float shW = 160f, shH = 12f;
+            float shX = cx - shW / 2f, shY = 18f;
+            int shBg  = ImGui.colorConvertFloat4ToU32(0.05f, 0.05f, 0.2f,  0.85f);
+            int shFg  = ImGui.colorConvertFloat4ToU32(0.25f, 0.65f, 1.0f,  1.0f);
+            draw.addRectFilled(shX, shY, shX + shW, shY + shH, shBg, 4f);
+            float shFill = (player.stand.standHealth / GameConfig.standMaxHealth) * shW;
+            draw.addRectFilled(shX, shY, shX + shFill, shY + shH, shFg, 4f);
+            draw.addRect(shX, shY, shX + shW, shY + shH, black, 4f, 0, 1.5f);
+            String shLabel = String.format("STAND HP  %.0f / %.0f",
+                    player.stand.standHealth, GameConfig.standMaxHealth);
+            draw.addText(cx - 50f, shY + shH + 4f, black, shLabel);
+            draw.addText(cx - 51f, shY + shH + 3f, ImGui.colorConvertFloat4ToU32(0.6f, 0.85f, 1.0f, 0.9f), shLabel);
+
+            // ── LOS status indicators ─────────────────────────────────────────
+            // Two dots: owner→stand (left), stand→target (right).
+            // Green = clear, red = blocked.
+            float dotY   = shY + shH + 26f;
+            float dotR   = 5f;
+            int losGreen = ImGui.colorConvertFloat4ToU32(0.2f, 1.0f, 0.35f, 1.0f);
+            int losRed   = ImGui.colorConvertFloat4ToU32(1.0f, 0.2f, 0.15f, 1.0f);
+            int losDim   = ImGui.colorConvertFloat4ToU32(0.4f, 0.4f, 0.4f,  0.6f);
+
+            // Owner→Stand
+            float d1X = cx - 28f;
+            draw.addCircleFilled(d1X, dotY, dotR,
+                    player.stand.losOwnerToStand ? losGreen : losRed, 16);
+            draw.addCircle(d1X, dotY, dotR, black, 16, 1.2f);
+            draw.addText(d1X - 14f, dotY + 8f,
+                    ImGui.colorConvertFloat4ToU32(0.75f, 0.75f, 0.75f, 0.8f), "OWNER");
+
+            // Connecting line
+            draw.addLine(cx - 22f, dotY, cx + 22f, dotY, losDim, 1.2f);
+
+            // Stand→Target
+            float d2X = cx + 28f;
+            draw.addCircleFilled(d2X, dotY, dotR,
+                    player.stand.losStandToTarget ? losGreen : losRed, 16);
+            draw.addCircle(d2X, dotY, dotR, black, 16, 1.2f);
+            draw.addText(d2X - 12f, dotY + 8f,
+                    ImGui.colorConvertFloat4ToU32(0.75f, 0.75f, 0.75f, 0.8f), "TGT");
+
+            // Fire-ready composite state
+            boolean readyToFire = player.stand.losOwnerToStand && player.stand.losStandToTarget;
+            String fireHint = readyToFire ? "[LMB] Fire redirect shot" : "No clear line of fire";
+            int fireColor = readyToFire
+                    ? ImGui.colorConvertFloat4ToU32(0.2f, 1.0f, 0.4f, 0.95f)
+                    : ImGui.colorConvertFloat4ToU32(1.0f, 0.4f, 0.2f, 0.75f);
+            draw.addText(cx - 65f, dotY + 20f, black, fireHint);
+            draw.addText(cx - 66f, dotY + 19f, fireColor, fireHint);
+
+            // ── Master position marker (glowing dot + distance) ───────────────
+            // Project player body position to screen so pilot can see where master is.
+            Camera sc      = player.stand.standCamera;
+            Matrix4f svp   = new Matrix4f(sc.getProjectionMatrix()).mul(sc.getViewMatrix());
+            org.joml.Vector4f masterClip = new org.joml.Vector4f(
+                    player.position.x, player.position.y + 0.9f, player.position.z, 1f).mul(svp);
+            boolean masterInFront = masterClip.w > 0f;
+            float masterDist = new Vector3f(player.stand.standPos).sub(player.position).length();
+            String distLabel = String.format("%.0fm", masterDist);
+
+            if (masterInFront) {
+                float mNdcX = masterClip.x / masterClip.w;
+                float mNdcY = masterClip.y / masterClip.w;
+                boolean mOnScreen = Math.abs(mNdcX) <= 0.92f && Math.abs(mNdcY) <= 0.92f;
+                float mScrX = (mNdcX  * 0.5f + 0.5f) * screenW;
+                float mScrY = (1f - (mNdcY * 0.5f + 0.5f)) * screenH;
+
+                if (mOnScreen) {
+                    // Pulsing gold ring — master is visible from drone camera
+                    int masterGold = ImGui.colorConvertFloat4ToU32(1.0f, 0.85f, 0.15f, 0.9f);
+                    draw.addCircle(mScrX, mScrY, 11f, masterGold, 24, 2.5f);
+                    draw.addCircle(mScrX, mScrY, 7f,  masterGold, 24, 1.5f);
+                    draw.addText(mScrX - 12f, mScrY + 14f, black, distLabel);
+                    draw.addText(mScrX - 13f, mScrY + 13f, masterGold, distLabel);
+                }
+            }
+
+            // ── Return hint ───────────────────────────────────────────────────
+            String returnHint = "[TAB]  Return to body";
+            draw.addText(cx - 52f, screenH - 30f, black, returnHint);
+            draw.addText(cx - 53f, screenH - 31f,
+                    ImGui.colorConvertFloat4ToU32(0.7f, 0.82f, 1.0f, 0.85f), returnHint);
+        }
+
+        // ── SEAL COUNT DISPLAY ────────────────────────────────────────────────
+        // Show placed seal count + place cooldown tick only when NOT in drone view.
+        if (!player.stand.isInStandPerspective() && !player.debugMode) {
+            int placed  = player.seals.getSealCount();
+            int maxSeals = GameConfig.sealMaxCount;
+            // Pip row: filled diamond = placed, hollow = available slot
+            float pipY     = screenH - 120f;
+            float pipGap   = 14f;
+            float pipStartX = cx - (maxSeals - 1) * pipGap / 2f;
+            int sealCyan  = ImGui.colorConvertFloat4ToU32(0.2f, 0.95f, 0.95f, 1.0f);
+            int sealDim   = ImGui.colorConvertFloat4ToU32(0.3f, 0.3f, 0.3f,  0.55f);
+
+            for (int i = 0; i < maxSeals; i++) {
+                float px  = pipStartX + i * pipGap;
+                float half = 5f;
+                if (i < placed) {
+                    // Filled diamond
+                    draw.addQuadFilled(px,       pipY - half,
+                                       px + half, pipY,
+                                       px,        pipY + half,
+                                       px - half, pipY, sealCyan);
+                    draw.addQuad(px,       pipY - half,
+                                 px + half, pipY,
+                                 px,        pipY + half,
+                                 px - half, pipY, black, 1.2f);
+                } else {
+                    // Empty diamond outline
+                    draw.addQuad(px,       pipY - half,
+                                 px + half, pipY,
+                                 px,        pipY + half,
+                                 px - half, pipY, sealDim, 1.2f);
+                }
+            }
+
+            // Label: seal key hints on first and last slot
+            float placeF    = player.seals.getPlaceCooldownFrac();
+            float teleportF = player.seals.getTeleportCooldownFrac();
+            String sealLabel = String.format("[H] Place  [B] Teleport  [N] Reclaim   %d/%d",
+                    placed, maxSeals);
+            int labelCol = (placeF >= 1f)
+                    ? ImGui.colorConvertFloat4ToU32(0.6f, 0.95f, 0.95f, 0.75f)
+                    : ImGui.colorConvertFloat4ToU32(0.45f, 0.6f,  0.6f,  0.55f);
+            draw.addText(cx - 95f, pipY + 10f, black, sealLabel);
+            draw.addText(cx - 96f, pipY + 9f,  labelCol, sealLabel);
         }
 
         // ── ABILITY COOLDOWN ICONS ────────────────────────────────────────────
@@ -1503,47 +2055,96 @@ public class Window {
      * ability's ready fraction: full = coloured, on-cooldown = grey fill.
      */
     private void renderAbilityHUD(imgui.ImDrawList draw, float screenW, float screenH) {
-        // ── Ability icon layout: row of 4, bottom-right ───────────────────────
+        // ── Ability icon layout: two rows, bottom-right ───────────────────────
+        // Row 1 (top, further from edge): Q  E  G  Z   — original four abilities
+        // Row 2 (bottom, near edge):      X  H  B       — Stand + Seal abilities
         float iconSize = 28f;
         float spacing  = 6f;
-        float totalW   = 4 * iconSize + 3 * spacing;
-        float startX   = screenW - totalW - 14f;
-        float startY   = screenH - iconSize - 14f;
         int   black    = ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.8f);
         int   grey     = ImGui.colorConvertFloat4ToU32(0.2f, 0.2f, 0.2f, 0.8f);
 
-        String[]  labels   = { "Q",  "E",  "G",  "Z"  };
-        String[]  tooltips = { "Dash", "Blink", "Canon", "Rewind" };
-        float[]   fracs    = {
-                player.abilities.getDashCooldownFrac(),
-                player.abilities.getBlinkCooldownFrac(),
-                player.abilities.getCannonCooldownFrac(),
-                player.abilities.getRewindCooldownFrac()
-        };
-        int[] colors = {
-                ImGui.colorConvertFloat4ToU32(0.45f, 0.88f, 1.0f, 1.0f),  // dash: cyan
-                ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1.0f, 1.0f),  // blink: white
-                ImGui.colorConvertFloat4ToU32(1.0f,  0.65f, 0.1f, 1.0f),  // cannonball: gold
-                ImGui.colorConvertFloat4ToU32(0.3f,  0.6f,  1.0f, 1.0f)   // rewind: blue
-        };
+        // Row 1 — Q / E / G / Z
+        {
+            float totalW = 4 * iconSize + 3 * spacing;
+            float startX = screenW - totalW - 14f;
+            float startY = screenH - iconSize * 2f - spacing - 14f;
 
-        for (int i = 0; i < 4; i++) {
-            float x = startX + i * (iconSize + spacing);
-            // Background
-            draw.addRectFilled(x, startY, x + iconSize, startY + iconSize, grey, 5f);
-            // Filled based on cooldown (from bottom up)
-            float fillH = iconSize * fracs[i];
-            if (fillH > 0.5f) {
-                draw.addRectFilled(x, startY + iconSize - fillH,
-                        x + iconSize, startY + iconSize, colors[i], 5f);
+            String[] labels   = { "Q",  "E",  "G",  "Z"  };
+            String[] tooltips = { "Dash", "Blink", "Canon", "Rewind" };
+            float[]  fracs    = {
+                    player.abilities.getDashCooldownFrac(),
+                    player.abilities.getBlinkCooldownFrac(),
+                    player.abilities.getCannonCooldownFrac(),
+                    player.abilities.getRewindCooldownFrac()
+            };
+            int[] colors = {
+                    ImGui.colorConvertFloat4ToU32(0.45f, 0.88f, 1.0f, 1.0f),  // dash: cyan
+                    ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1.0f, 1.0f),  // blink: white
+                    ImGui.colorConvertFloat4ToU32(1.0f,  0.65f, 0.1f, 1.0f),  // cannonball: gold
+                    ImGui.colorConvertFloat4ToU32(0.3f,  0.6f,  1.0f, 1.0f)   // rewind: blue
+            };
+
+            for (int i = 0; i < 4; i++) {
+                float x = startX + i * (iconSize + spacing);
+                draw.addRectFilled(x, startY, x + iconSize, startY + iconSize, grey, 5f);
+                float fillH = iconSize * fracs[i];
+                if (fillH > 0.5f) {
+                    draw.addRectFilled(x, startY + iconSize - fillH,
+                            x + iconSize, startY + iconSize, colors[i], 5f);
+                }
+                draw.addRect(x, startY, x + iconSize, startY + iconSize, black, 5f, 0, 1.5f);
+                draw.addText(x + 9f, startY + 7f, black, labels[i]);
+                draw.addText(x + 9f, startY + 7f,
+                        ImGui.colorConvertFloat4ToU32(1f, 1f, 1f, 0.9f), labels[i]);
+                draw.addText(x, startY + iconSize + 2f,
+                        ImGui.colorConvertFloat4ToU32(0.8f, 0.8f, 0.8f, 0.7f), tooltips[i]);
             }
-            // Outline
-            draw.addRect(x, startY, x + iconSize, startY + iconSize, black, 5f, 0, 1.5f);
-            // Key label
-            draw.addText(x + 9f, startY + 7f, black, labels[i]);
-            draw.addText(x + 9f, startY + 7f, ImGui.colorConvertFloat4ToU32(1f, 1f, 1f, 0.9f), labels[i]);
-            // Ability name (small, below icon)
-            draw.addText(x, startY + iconSize + 2f, ImGui.colorConvertFloat4ToU32(0.8f, 0.8f, 0.8f, 0.7f), tooltips[i]);
+        }
+
+        // Row 2 — X (Stand)  H (Seal place)  B (Seal teleport)
+        {
+            float totalW = 3 * iconSize + 2 * spacing;
+            float startX = screenW - totalW - 14f;
+            float startY = screenH - iconSize - 14f;
+
+            // X: stand deploy — gold when deployed, blue-grey on cooldown
+            boolean standDeployed = player.stand.isDeployed();
+            float   standFrac     = player.stand.getRedeployCooldownFrac();
+            int     standColor    = standDeployed
+                    ? ImGui.colorConvertFloat4ToU32(1.0f, 0.82f, 0.15f, 1.0f)   // gold: deployed
+                    : ImGui.colorConvertFloat4ToU32(0.4f, 0.65f, 0.9f,  1.0f);  // blue: ready
+
+            // H: seal place — cyan when ready, dim on cooldown
+            float sealPlaceFrac = player.seals.getPlaceCooldownFrac();
+            int   sealPlaceColor = ImGui.colorConvertFloat4ToU32(0.2f, 0.92f, 0.92f, 1.0f);
+
+            // B: seal teleport — teal when ready, darker on cooldown
+            float sealTpFrac   = player.seals.getTeleportCooldownFrac();
+            int   sealTpColor  = ImGui.colorConvertFloat4ToU32(0.1f, 0.75f, 0.65f, 1.0f);
+
+            String[] labels2   = { "X",     "H",     "B"      };
+            String[] tooltips2 = { "Stand", "Seal",  "Warp"   };
+            float[]  fracs2    = { standDeployed ? 1f : standFrac, sealPlaceFrac, sealTpFrac };
+            int[]    colors2   = { standColor, sealPlaceColor, sealTpColor };
+
+            for (int i = 0; i < 3; i++) {
+                float x = startX + i * (iconSize + spacing);
+                draw.addRectFilled(x, startY, x + iconSize, startY + iconSize, grey, 5f);
+                float fillH = iconSize * fracs2[i];
+                if (fillH > 0.5f) {
+                    draw.addRectFilled(x, startY + iconSize - fillH,
+                            x + iconSize, startY + iconSize, colors2[i], 5f);
+                }
+                // Stand icon: bright outline when deployed
+                float outlineThick = (i == 0 && standDeployed) ? 2.5f : 1.5f;
+                draw.addRect(x, startY, x + iconSize, startY + iconSize,
+                        (i == 0 && standDeployed) ? colors2[0] : black, 5f, 0, outlineThick);
+                draw.addText(x + 9f, startY + 7f, black, labels2[i]);
+                draw.addText(x + 9f, startY + 7f,
+                        ImGui.colorConvertFloat4ToU32(1f, 1f, 1f, 0.9f), labels2[i]);
+                draw.addText(x, startY + iconSize + 2f,
+                        ImGui.colorConvertFloat4ToU32(0.8f, 0.8f, 0.8f, 0.7f), tooltips2[i]);
+            }
         }
     }
 

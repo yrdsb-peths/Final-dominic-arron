@@ -93,6 +93,18 @@ public class AttackController {
     /** Debris waiting to be spawned — drained by Window each frame. */
     public final List<DebrisSpawn> pendingDebris = new ArrayList<>();
 
+    /**
+     * Sphere explosions queued this frame — drained by Window into EnemyManager.
+     * Format: float[4] { centreX, centreY, centreZ, radius }
+     */
+    public final List<float[]> pendingExplosions = new ArrayList<>();
+
+    /**
+     * Melee arc sweeps queued this frame — drained by Window into EnemyManager.
+     * Format: float[7] { originX, originY, originZ, dirX, dirY, dirZ, range }
+     */
+    public final List<float[]> pendingMeleeArcs = new ArrayList<>();
+
     // ── Camera effects ────────────────────────────────────────────────────────
     // pitchOffset:  target value set per-phase, smoothed into smoothPitch.
     // Window applies smoothPitch non-destructively around getViewMatrix().
@@ -243,6 +255,14 @@ public class AttackController {
         // Origin point: player's mid-torso/eye-level
         Vector3f origin = new Vector3f(player.position.x, player.position.y + 1.1f, player.position.z);
 
+        // Emit a melee arc damage event — drained by Window into EnemyManager.
+        // Range matches the crescent depth (R = 7 blocks).
+        pendingMeleeArcs.add(new float[] {
+                origin.x, origin.y, origin.z,
+                lookVec.x, lookVec.y, lookVec.z,
+                7f
+        });
+
         int R = 7; // Maximum horizontal sweep radius of the crescent (blocks)
         int vMin = -1;
         int vMax = 2;
@@ -390,6 +410,7 @@ public class AttackController {
 
             for (int s = 0; s < substeps && !hit; s++) {
                 bolt.pos.add(new Vector3f(bolt.vel).mul(subDt));
+
                 int bx = (int) Math.floor(bolt.pos.x);
                 int by = (int) Math.floor(bolt.pos.y);
                 int bz = (int) Math.floor(bolt.pos.z);
@@ -444,6 +465,9 @@ public class AttackController {
                 }
             }
         }
+
+        // Emit explosion damage event — drained by Window into EnemyManager.
+        pendingExplosions.add(new float[] { cx, cy, cz, radius });
 
         // Scale shake with charge
         shakeRequest = Math.max(shakeRequest,

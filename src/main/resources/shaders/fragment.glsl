@@ -2,12 +2,20 @@
 in vec4  vertexColor;
 in vec3  vertexNormal;
 in float vWorldY;        // world-space Y of this fragment (from vertex shader)
+in vec2  vertexUV;       // texture coordinates (zero when not a ModelMesh)
 
 uniform vec3  sunDirection;
 uniform float sunStrength;
 uniform float ambientStrength;
 uniform int   isUnderwater;
 uniform float cameraY;        // camera eye world-Y, set each frame from Java
+
+// ── TEXTURE SAMPLING ──────────────────────────────────────────────────────────
+// Set useTexture = 1 and bind a texture to unit 0 to enable texture sampling.
+// Set useTexture = 0 (default) to use pure vertex colour — all existing Mesh
+// rendering is unaffected because this uniform defaults to 0.
+uniform sampler2D texSampler;
+uniform int       useTexture;   // 0 = vertex colour only, 1 = texture × vertex colour
 
 // ── TIME DILATION VIGNETTE ────────────────────────────────────────────────────
 uniform float timeVignetteStrength;
@@ -30,7 +38,16 @@ void main() {
     float diffuse = max(0.0, dot(normalize(vertexNormal), normalize(sunDirection)));
     float light   = ambientStrength + sunStrength * diffuse;
 
-    vec3 color          = vertexColor.rgb * light;
+    // ── Base colour: vertex colour or texture × vertex colour ─────────────────
+    vec4 baseColor;
+    if (useTexture == 1) {
+        vec4 texColor = texture(texSampler, vertexUV);
+        baseColor = texColor * vertexColor;
+    } else {
+        baseColor = vertexColor;
+    }
+
+    vec3 color          = baseColor.rgb * light;
     vec3 gammaCorrected = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 1.2));
 
     // ── ABYSS DEPTH DARKNESS ──────────────────────────────────────────────────
@@ -62,5 +79,5 @@ void main() {
         gammaCorrected = mix(gammaCorrected, overlayVignetteColor, overlayVignetteStrength);
     }
 
-    FragColor = vec4(gammaCorrected, vertexColor.a * alphaMultiplier);
+    FragColor = vec4(gammaCorrected, baseColor.a * alphaMultiplier);
 }

@@ -173,4 +173,44 @@ public class GameConfig {
     public static float voidShardMaxRadius    = 3.2f;   // explosion radius at full charge
     public static float voidShardCooldown     = 1.6f;   // seconds
     public static float voidShardShakeStrength = 0.18f; // base shake factor (scaled by chargeF)
+
+    // ── MANHATTAN TRANSFER (Stand / Drone — X key) ────────────────────────────
+    // X          : deploy / recall stand
+    // TAB        : enter / exit stand perspective
+    // WASD+Space+Shift in stand perspective: fly the drone
+    // LMB in stand perspective: fire redirect shot (dual LOS required)
+    public static float standMaxHealth       = 50f;   // HP before stand is destroyed
+    public static float standSpeed           = 22f;   // blocks/sec drone movement
+    public static float standShotSpeed       = 90f;   // blocks/sec redirect bolt
+    public static float standShotRange       = 80f;   // max bolt travel distance (blocks)
+    public static float standDeployHeight    = 8f;    // blocks above player on deploy
+    public static float standRecallCooldown  = 1.5f;  // seconds after recall before re-deploy
+    public static float standDestroyCooldown = 5.0f;  // seconds after destruction before re-deploy
+    public static float standBlockedFlashTime = 0.5f; // HUD flash duration when LOS blocked
+    public static float standShotRadius      = 2.5f;  // explosion radius on bolt impact (blocks)
+    public static float standHoverBob        = 0.4f;  // amplitude of idle bob (blocks)
+    public static float standHoverBobSpeed   = 1.8f;  // Hz of idle bob
+
+    // ── MINATO'S SEAL (H / B / N keys) ───────────────────────────────────────
+    // H : fire seal projectile — embeds on first solid surface hit
+    // B : teleport instantly to targeted seal (closest to crosshair)
+    // N : reclaim targeted seal (retrieve it back)
+    public static int   sealMaxCount          = 5;     // max simultaneously placed seals
+    public static float sealProjectileSpeed   = 60f;   // blocks/sec
+    public static float sealProjectileLifetime = 3.0f; // seconds before despawn if no hit
+    public static float sealPlaceCooldown     = 0.4f;  // seconds between placements
+    public static float sealTeleportCooldown  = 0.0f;  // seconds between teleports
+    public static float sealTeleportFlash     = 0.25f; // seconds for teleport white flash
+    public static float sealPulseSpeed        = 4.5f;  // Hz for idle pulse glow
+    public static float sealThroughWallAlpha  = 0.7f; // opacity of through-wall ghost
+    public static float sealTargetedScale     = 3.5f;  // size multiplier for targeted seal
+
+    /**
+     * Flying Raijin look-direction mode after teleporting to a seal.
+     *   0 — keep current look direction (unchanged, default)
+     *   1 — face the direction of travel (look toward where you came from, i.e. away from origin)
+     *   2 — look toward the nearest remaining seal after landing
+     */
+    public static int sealLookMode = 2;
+
 }
