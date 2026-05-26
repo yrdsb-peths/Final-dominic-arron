@@ -106,8 +106,8 @@ public class GameConfig {
     public static float rollLerpSpeed      = 2.5f;   // roll lerp rate (reduced from 6.0 — was too fast/disorienting)
 
     // ── GROUND SMASH ─────────────────────────────────────────────────────────
-    public static float smashMinHeight      = 15.0f;   // blocks fallen before smash triggers
-    public static float smashTriggerVelocity = -8.0f; // must be falling at least this fast
+    public static float smashMinHeight      = 2.0f;   // blocks fallen before smash triggers
+    public static float smashTriggerVelocity = -3.0f; // must be falling at least this fast
     public static float smashDescentSpeed   = 65.0f;   // locked downward speed during smash
     public static int   smashCraterRadius   = 4;       // sphere radius in blocks
     public static float smashShakeDuration  = 0.8f;    // seconds of screen shake
