@@ -4,7 +4,7 @@
 #  Just run:  bash play-mac.sh
 # ─────────────────────────────────────────────────────────────────────────────
 
-REPO="yrdsb-peths/Final-dominic-arron"
+REPO="weAllHateMicrosoft/voxel"
 JAR_URL="https://github.com/$REPO/releases/latest/download/game.jar"
 
 # Store the JAR next to this script so everything lives in one folder

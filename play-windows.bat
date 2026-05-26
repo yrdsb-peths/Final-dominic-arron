@@ -5,7 +5,7 @@
 :: ─────────────────────────────────────────────────────────────────────────────
 setlocal
 
-set REPO=yrdsb-peths/Final-dominic-arron
+set REPO=weAllHateMicrosoft/voxel
 set JAR_URL=https://github.com/%REPO%/releases/latest/download/game.jar
 set JAR=%~dp0game.jar
 
