@@ -217,6 +217,40 @@ public class GameConfig {
      */
     public static int sealLookMode = 1;
 
+    // ── ENEMIES ───────────────────────────────────────────────────────────────
+    // GRUNT — standard pursuer.  Medium speed, medium health.
+    public static float gruntSpeed        = 3.5f;
+    public static float gruntHealth       = 50f;
+    public static float gruntDamagePerSec = 8f;
+    public static float gruntAggroRange   = 24f;
+    public static float gruntAttackRange  = 1.5f;
+
+    // BRUTE — slow tank.  High health, heavy damage.
+    public static float bruteSpeed        = 1.8f;
+    public static float bruteHealth       = 200f;
+    public static float bruteDamagePerSec = 20f;
+    public static float bruteAggroRange   = 16f;
+    public static float bruteAttackRange  = 2.0f;
+
+    // STALKER — fast glass cannon.  Long aggro, fragile.
+    public static float stalkerSpeed        = 6.5f;
+    public static float stalkerHealth       = 25f;
+    public static float stalkerDamagePerSec = 6f;
+    public static float stalkerAggroRange   = 36f;
+    public static float stalkerAttackRange  = 1.5f;
+
+    // ── ENEMY WAVE SPAWNING ───────────────────────────────────────────────────
+    /** Seconds between automatic wave spawns. */
+    public static float spawnWaveInterval = 30f;
+    /** Minimum horizontal spawn distance from player (blocks). */
+    public static float spawnMinDist      = 22f;
+    /** Maximum horizontal spawn distance from player (blocks). */
+    public static float spawnMaxDist      = 38f;
+    /** Maximum total live enemies before spawning is suppressed. */
+    public static int   spawnMaxEnemies   = 24;
+    /** Base enemies per wave (scales with wave number). */
+    public static int   spawnWaveBase     = 3;
+
     public static float pillarRiseSpeed = 16.0f;   // Blocks/sec upward velocity
     public static float pillarMaxHeight = 40.0f;   // Max altitude gained per cast
     public static float pillarTaper     = 0.15f;   // REDUCED: How much it widens per block downwards (more subtle)

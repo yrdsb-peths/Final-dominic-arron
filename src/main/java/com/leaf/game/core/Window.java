@@ -494,8 +494,15 @@ public class Window {
                         }
                         player.attacks.pendingMeleeArcs.clear();
 
-                        // Update all enemies (gravity, death fade, etc.)
-                        enemyManager.update(deltaTime, world);
+                        // Update all enemies (gravity, AI, death fade, etc.)
+                        enemyManager.update(deltaTime, world, player.position);
+
+                        // Drain enemy damage into player health
+                        if (enemyManager.pendingPlayerDamage > 0f) {
+                            player.health = Math.max(0f,
+                                    player.health - enemyManager.pendingPlayerDamage);
+                            enemyManager.pendingPlayerDamage = 0f;
+                        }
 
                         // P key — spawn test enemy at crosshair hit point
                         boolean pHeld = glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS;
@@ -1105,26 +1112,41 @@ public class Window {
                             com.leaf.game.render.AssetManager.get().getModel("player");
                     for (Enemy enemy : enemyManager.getEnemies()) {
                         float flashF = enemy.hitFlashTimer > 0f ? (enemy.hitFlashTimer / 0.18f) : 0f;
-                        float alpha = enemy.alive ? 1.0f : flashF;
+                        float alpha  = enemy.alive ? 1.0f : flashF;
                         if (alpha < 0.02f) continue;
+
+                        // Per-type base tint: applied at low strength as a permanent
+                        // colour overlay so each type reads distinctly at a glance.
+                        // Hit-flash overrides this when the enemy takes damage.
+                        Vector3f typeColor;
+                        float    typeOverlayStr;
+                        switch (enemy.type) {
+                            case BRUTE   -> { typeColor = new Vector3f(0.55f, 0.10f, 0.80f); typeOverlayStr = 0.18f; } // deep purple
+                            case STALKER -> { typeColor = new Vector3f(0.55f, 0.90f, 0.10f); typeOverlayStr = 0.18f; } // yellow-green
+                            default      -> { typeColor = new Vector3f(0.90f, 0.30f, 0.05f); typeOverlayStr = 0.12f; } // GRUNT: red-orange
+                        }
 
                         shader.setUniform("alphaMultiplier", alpha);
                         if (flashF > 0f) {
-                            shader.setUniform("overlayVignetteStrength", flashF * 0.55f);
-                            shader.setUniform("overlayVignetteColor", new Vector3f(1.0f, 0.2f, 0.15f));
+                            // White-hot hit flash overrides type colour
+                            shader.setUniform("overlayVignetteStrength", flashF * 0.65f);
+                            shader.setUniform("overlayVignetteColor", new Vector3f(1.0f, 0.25f, 0.15f));
+                        } else {
+                            // Ambient type-colour tint
+                            shader.setUniform("overlayVignetteStrength", typeOverlayStr);
+                            shader.setUniform("overlayVignetteColor", typeColor);
                         }
 
+                        float scale = enemy.renderScale();
                         Matrix4f enemyMat = new Matrix4f()
                                 .translate(enemy.position.x, enemy.position.y, enemy.position.z)
-                                .scale(0.5f);
+                                .scale(scale);
                         shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(enemyMat));
                         enemyModel.render();
-
-                        if (flashF > 0f) {
-                            shader.setUniform("overlayVignetteStrength", 0f);
-                            shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
-                        }
                     }
+                    // Reset overlay state
+                    shader.setUniform("overlayVignetteStrength", 0f);
+                    shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
                     shader.setUniform("alphaMultiplier", 1.0f);
                 }
 
@@ -1945,9 +1967,178 @@ public class Window {
             draw.addText(cx - 96f, pipY + 9f,  labelCol, sealLabel);
         }
 
+        // ── SEAL HUD MARKERS ─────────────────────────────────────────────────
+        // Always-visible indicators so seals are spottable at any distance:
+        //   • On-screen seal  → pulsing cyan ring + distance label
+        //   • Off-screen seal → small cyan arrow on screen edge
+        if (!player.stand.isInStandPerspective()
+                && !player.seals.placedSeals.isEmpty()) {
+
+            Matrix4f sealVP = new Matrix4f(camera.getProjectionMatrix())
+                    .mul(camera.getViewMatrix());
+
+            for (SealController.SealEntry seal : player.seals.placedSeals) {
+                org.joml.Vector4f clip = new org.joml.Vector4f(
+                        seal.position.x, seal.position.y, seal.position.z, 1f)
+                        .mul(sealVP);
+
+                boolean inFront = clip.w > 0f;
+                float absW = Math.abs(clip.w);
+                float ndcX = clip.x / absW;
+                float ndcY = clip.y / absW;
+                boolean onScreen = inFront
+                        && Math.abs(ndcX) <= 1.0f && Math.abs(ndcY) <= 1.0f;
+
+                float dist = new Vector3f(seal.position).sub(camera.position).length();
+                String distLabel = String.format("%.0fm", dist);
+
+                int sealRingColor = seal.targeted
+                        ? ImGui.colorConvertFloat4ToU32(0.2f, 1.0f, 1.0f, 1.0f)
+                        : ImGui.colorConvertFloat4ToU32(0.1f, 0.8f, 0.8f, 0.85f);
+                int sealDimText = ImGui.colorConvertFloat4ToU32(0.2f, 0.9f, 0.9f, 0.75f);
+
+                if (onScreen) {
+                    // Project to pixel coords
+                    float sx = (ndcX  * 0.5f + 0.5f) * screenW;
+                    float sy = (1f - (ndcY * 0.5f + 0.5f)) * screenH;
+
+                    // Pulse: ring radius grows/shrinks slightly
+                    float pulse = 1f + 0.12f * (float)Math.sin(seal.pulsePhase * 2f);
+                    float outerR = (seal.targeted ? 18f : 11f) * pulse;
+                    float innerR = outerR * 0.55f;
+
+                    // Outer ring
+                    draw.addCircle(sx, sy, outerR, sealRingColor, 20, seal.targeted ? 2.5f : 1.8f);
+                    // Inner dot for targeted seal
+                    if (seal.targeted) {
+                        draw.addCircleFilled(sx, sy, innerR,
+                                ImGui.colorConvertFloat4ToU32(0.2f, 1.0f, 1.0f, 0.35f), 16);
+                    }
+                    // Distance label just below the ring
+                    float labelY = sy + outerR + 3f;
+                    draw.addText(sx - 12f, labelY + 1f, black, distLabel);
+                    draw.addText(sx - 13f, labelY,      sealDimText, distLabel);
+
+                } else {
+                    // Off-screen arrow — same dot-product technique as the stand indicator
+                    Vector3f toSeal = new Vector3f(seal.position)
+                            .sub(camera.position).normalize();
+                    Vector3f right = camera.getRight();
+                    Vector3f up    = new Vector3f(right)
+                            .cross(camera.getLookDirection()).normalize();
+
+                    float dirX  = toSeal.dot(right);
+                    float dirY  = -toSeal.dot(up);
+                    float angle = (float)Math.atan2(dirY, dirX);
+                    float edgeR = Math.min(cx, cy) * 0.80f;
+
+                    float ax = cx + (float)Math.cos(angle) * edgeR;
+                    float ay = cy + (float)Math.sin(angle) * edgeR;
+
+                    // Small triangle arrow
+                    float cosA = (float)Math.cos(angle);
+                    float sinA = (float)Math.sin(angle);
+                    float tl = 12f, tw = 7f;
+                    // tip, left-base, right-base
+                    float t1x = ax + cosA * tl * 0.5f, t1y = ay + sinA * tl * 0.5f;
+                    float t2x = ax - cosA * tl * 0.5f + sinA * tw * 0.5f;
+                    float t2y = ay - sinA * tl * 0.5f - cosA * tw * 0.5f;
+                    float t3x = ax - cosA * tl * 0.5f - sinA * tw * 0.5f;
+                    float t3y = ay - sinA * tl * 0.5f + cosA * tw * 0.5f;
+                    draw.addTriangleFilled(t1x, t1y, t2x, t2y, t3x, t3y, sealRingColor);
+                    draw.addTriangle(t1x, t1y, t2x, t2y, t3x, t3y, black, 1.2f);
+
+                    // Distance label beside arrow
+                    draw.addText(ax + cosA * (tl + 3f) - 10f,
+                                 ay + sinA * (tl + 3f) - 6f, black, distLabel);
+                    draw.addText(ax + cosA * (tl + 3f) - 11f,
+                                 ay + sinA * (tl + 3f) - 7f, sealDimText, distLabel);
+                }
+            }
+        }
+
+        // ── ENEMY HP BARS ─────────────────────────────────────────────────────
+        // World-space health bar projected above each enemy's head.
+        if (!enemyManager.getEnemies().isEmpty()) {
+            Matrix4f enemyVP = new Matrix4f(camera.getProjectionMatrix())
+                    .mul(camera.getViewMatrix());
+
+            for (Enemy enemy : enemyManager.getEnemies()) {
+                if (!enemy.alive) continue;
+
+                // Project chest-level position
+                Vector3f headPos = new Vector3f(
+                        enemy.position.x,
+                        enemy.position.y + 2.3f,    // just above model top
+                        enemy.position.z);
+                org.joml.Vector4f clip = new org.joml.Vector4f(
+                        headPos.x, headPos.y, headPos.z, 1f).mul(enemyVP);
+                if (clip.w <= 0f) continue; // behind camera
+
+                float ndcX = clip.x / clip.w;
+                float ndcY = clip.y / clip.w;
+                if (Math.abs(ndcX) > 1.0f || Math.abs(ndcY) > 1.0f) continue;
+
+                float sx = (ndcX  * 0.5f + 0.5f) * screenW;
+                float sy = (1f - (ndcY * 0.5f + 0.5f)) * screenH;
+
+                float hpFrac = enemy.health / enemy.maxHealth;
+                float barW   = 44f, barH = 6f;
+                float barX   = sx - barW / 2f, barY = sy - barH;
+
+                // Background
+                draw.addRectFilled(barX, barY, barX + barW, barY + barH,
+                        ImGui.colorConvertFloat4ToU32(0.1f, 0f, 0f, 0.8f), 2f);
+                // HP fill — green → red as health drops
+                float r = 0.15f + 0.85f * (1f - hpFrac);
+                float g = 0.9f * hpFrac;
+                draw.addRectFilled(barX, barY, barX + barW * hpFrac, barY + barH,
+                        ImGui.colorConvertFloat4ToU32(r, g, 0.05f, 1.0f), 2f);
+                draw.addRect(barX, barY, barX + barW, barY + barH,
+                        ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.9f), 2f, 0, 1.2f);
+
+                // HP numbers
+                String hpStr = String.format("%.0f", enemy.health);
+                draw.addText(sx - 7f, barY - 12f, black, hpStr);
+                draw.addText(sx - 8f, barY - 13f,
+                        ImGui.colorConvertFloat4ToU32(1f, 0.85f, 0.85f, 0.85f), hpStr);
+            }
+        }
+
         // ── ABILITY COOLDOWN ICONS ────────────────────────────────────────────
         if (!player.debugMode) {
             renderAbilityHUD(draw, screenW, screenH);
+        }
+
+        // ── WAVE COUNTER ──────────────────────────────────────────────────────
+        // Top-left: "WAVE N — next in Xs" or "MAX ENEMIES REACHED"
+        if (!player.stand.isInStandPerspective() && !player.debugMode) {
+            int   waveNum   = enemyManager.getWaveNumber();
+            float waveTimer = enemyManager.getWaveTimer();
+            int   liveCount = (int) enemyManager.getEnemies().stream().filter(e -> e.alive).count();
+            int   maxCount  = GameConfig.spawnMaxEnemies;
+
+            String waveLabel;
+            int    waveColor;
+            if (liveCount >= maxCount) {
+                waveLabel = String.format("WAVE %d  ■ MAX ENEMIES (%d/%d)", waveNum, liveCount, maxCount);
+                waveColor = ImGui.colorConvertFloat4ToU32(1.0f, 0.4f, 0.15f, 0.95f);
+            } else if (waveNum == 0) {
+                waveLabel = String.format("Next wave in %.0fs", waveTimer);
+                waveColor = ImGui.colorConvertFloat4ToU32(0.8f, 0.8f, 0.8f, 0.65f);
+            } else {
+                waveLabel = String.format("WAVE %d  — next in %.0fs  [%d alive]",
+                        waveNum, waveTimer, liveCount);
+                // Pulse red as the next wave approaches (< 8 s)
+                float urgency = Math.max(0f, 1f - waveTimer / 8f);
+                waveColor = ImGui.colorConvertFloat4ToU32(
+                        0.75f + 0.25f * urgency,
+                        0.85f - 0.50f * urgency,
+                        0.85f - 0.75f * urgency,
+                        0.85f);
+            }
+            draw.addText(12f, 13f, black,      waveLabel);
+            draw.addText(11f, 12f, waveColor,  waveLabel);
         }
 
         // ── TIME SCALE INDICATOR ──────────────────────────────────────────────
