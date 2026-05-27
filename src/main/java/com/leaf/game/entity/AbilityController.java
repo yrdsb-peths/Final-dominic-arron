@@ -38,6 +38,9 @@ public class AbilityController {
 
     private final Player player;
 
+    // ── HEALING (hold J) ──────────────────────────────────────────────────────
+    public  boolean isHealing         = false;
+    private float   healCooldownTimer = 0f;
     // ── DASH (Q) ───────────────────────────────────────────────────────────────
     public  boolean  isDashing    = false;
     public  float    dashDirX     = 0f;   // unit vector, read by Player.update()
@@ -504,7 +507,7 @@ public class AbilityController {
 
     /** True when any ability is running (dash, cannonball charging/firing, rewind). */
     public boolean isAnyAbilityActive() {
-        return isDashing || isCannonballing || isCharging_ || isRewinding|| isPillaring;
+        return isDashing || isCannonballing || isCharging_ || isRewinding|| isPillaring|| isHealing;
     }
 
     /**
@@ -528,6 +531,7 @@ public class AbilityController {
         if (rewindCooldown > 0f) rewindCooldown -= dt;
         if (blinkCooldown  > 0f) blinkCooldown  -= dt;
         if (pillarCooldownTimer > 0f) pillarCooldownTimer -= dt;
+        if (healCooldownTimer > 0f) healCooldownTimer -= dt;
     }
 
     /**

@@ -218,10 +218,19 @@ public class EnemyManager {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Process a sphere explosion.
+     * Process a sphere explosion using the default EXPLOSION_DAMAGE.
      * @param event float[4] — { cx, cy, cz, radius }
      */
     public void processExplosion(float[] event) {
+        processExplosion(event, EXPLOSION_DAMAGE);
+    }
+
+    /**
+     * Process a sphere explosion with a custom damage value.
+     * @param event  float[4] — { cx, cy, cz, radius }
+     * @param damage hit points to apply to each enemy inside the sphere
+     */
+    public void processExplosion(float[] event, float damage) {
         float cx = event[0], cy = event[1], cz = event[2], r = event[3];
         float r2  = r * r;
         for (Enemy e : enemies) {
@@ -229,7 +238,7 @@ public class EnemyManager {
             Vector3f centre = e.getCentre();
             float dx = centre.x - cx, dy = centre.y - cy, dz = centre.z - cz;
             if (dx*dx + dy*dy + dz*dz <= r2) {
-                e.applyDamage(EXPLOSION_DAMAGE);
+                e.applyDamage(damage);
             }
         }
     }

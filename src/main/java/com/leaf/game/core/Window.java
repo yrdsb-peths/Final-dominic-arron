@@ -91,6 +91,36 @@ public class Window {
     /** Edge-detect for P key to spawn enemies. */
     private boolean lastP = false;
 
+    // ── TODO'S TECHNIQUE (J key) ──────────────────────────────────────────────
+    private float   todoSwapCooldown = 0f;
+    private boolean lastJ            = false;
+
+    // ── PAPER FIGURINE SUBSTITUTE (V hold) ────────────────────────────────────
+    /** True while V is held and the ability is ready — next hit will be negated. */
+    private boolean substitutePrimed   = false;
+    private float   substituteCooldown = 0f;
+    /**
+     * Live paper dummies.  Each entry: float[5] = { x, y, z, timer, maxTimer }.
+     * Timer counts down from substituteDummyLifetime to 0, then explodes.
+     */
+    private final List<float[]> substituteDummies = new ArrayList<>();
+
+    // ── TUTORIAL / HELP ───────────────────────────────────────────────────────
+    /** F1 toggles the full controls reference overlay. */
+    private boolean showHelp       = false;
+    private boolean lastF1         = false;
+    /** Auto-dismiss welcome banner shown when the game first loads. */
+    private float   welcomeTimer   = 0f;
+    private boolean welcomeStarted = false;
+    /** One-liner contextual hint (e.g. first stand deploy, first seal placed). */
+    private String  hintText       = null;
+    private float   hintTimer      = 0f;
+    private boolean standHintShown = false;
+    private boolean sealHintShown  = false;
+    /** Edge-detect for contextual hint triggers. */
+    private boolean wasStandDeployed = false;
+    private int     lastSealCount    = 0;
+
     private float   breakProgress = 0.0f;
     private int     breakX, breakY, breakZ;
     private boolean breakingActive = false;
@@ -171,6 +201,12 @@ public class Window {
                 if (showChat) {
                     showChat = false;
                     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                } else if (showHelp) {
+                    // Help screen takes priority over pause so ESC cleanly dismisses it
+                    showHelp = false;
+                    glfwSetInputMode(window, GLFW_CURSOR,
+                            (showDebug || showNoiseViewer || isPaused)
+                                    ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
                 } else if (showNoiseViewer) {
                     showNoiseViewer = false;
                     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -183,16 +219,23 @@ public class Window {
 
             if (isPaused) return;
 
+            if (key == GLFW_KEY_F1 && action == GLFW_RELEASE && !showChat) {
+                showHelp = !showHelp;
+                glfwSetInputMode(window, GLFW_CURSOR,
+                        (showHelp || showDebug || showNoiseViewer)
+                                ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+            }
+
             if (key == GLFW_KEY_F3 && action == GLFW_RELEASE && !showChat) {
                 showDebug = !showDebug;
                 glfwSetInputMode(window, GLFW_CURSOR,
-                        (showDebug || showNoiseViewer) ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                        (showHelp || showDebug || showNoiseViewer) ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             }
 
             if (key == GLFW_KEY_F4 && action == GLFW_RELEASE && !showChat) {
                 showNoiseViewer = !showNoiseViewer;
                 glfwSetInputMode(window, GLFW_CURSOR,
-                        (showDebug || showNoiseViewer) ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                        (showHelp || showDebug || showNoiseViewer) ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             }
 
             // T opens chat (release event only, so holding T for time-dilation is safe
@@ -210,7 +253,7 @@ public class Window {
         });
 
         glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
-            if (!networkInitialized || isPreloading || showDebug || showChat || showNoiseViewer || isPaused)
+            if (!networkInitialized || isPreloading || showDebug || showChat || showNoiseViewer || isPaused || showHelp)
                 return;
 
             if (button == GLFW_MOUSE_BUTTON_LEFT) {
@@ -251,7 +294,7 @@ public class Window {
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         glfwSetCursorPosCallback(window, (win, xpos, ypos) -> {
-            if (!networkInitialized || isPreloading || showDebug || showChat || showNoiseViewer || isPaused)
+            if (!networkInitialized || isPreloading || showDebug || showChat || showNoiseViewer || isPaused || showHelp)
                 return;
             if (firstMouse[0]) {
                 lastMouseX[0] = xpos; lastMouseY[0] = ypos; firstMouse[0] = false; return;
@@ -417,9 +460,14 @@ public class Window {
                         // doesn't punch straight through the freshly-meshed ground.
                         player.setVelocityY(0f);
                         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                        // Start welcome banner once per session
+                        if (!welcomeStarted) {
+                            welcomeTimer   = 6.0f;
+                            welcomeStarted = true;
+                        }
                     }
 
-                    if (!showChat && !showDebug && !showNoiseViewer && !isPaused) {
+                    if (!showChat && !showDebug && !showNoiseViewer && !isPaused && !showHelp) {
                         // ── PLAYER UPDATE (time-scaled) ────────────────────────
                         player.update(window, camera, world, deltaTime);
                         updateBreaking(deltaTime);
@@ -517,6 +565,134 @@ public class Window {
                             }
                         }
                         lastP = pHeld;
+
+                        // ── TODO'S TECHNIQUE (J key) ──────────────────────────
+                        // Tap J: swap positions with the nearest visible enemy.
+                        if (todoSwapCooldown > 0f) todoSwapCooldown -= deltaTime;
+                        boolean jHeld = glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS;
+                        if (jHeld && !lastJ && !player.debugMode && todoSwapCooldown <= 0f) {
+                            Vector3f eyePos = new Vector3f(player.position.x,
+                                    player.position.y + 1.6f, player.position.z);
+                            Enemy swapTarget = enemyManager.findClosestVisible(
+                                    world, eyePos, GameConfig.todoRange);
+                            if (swapTarget != null) {
+                                // Save positions
+                                Vector3f oldPlayerPos  = new Vector3f(player.position);
+                                Vector3f oldEnemyPos   = new Vector3f(swapTarget.position);
+                                // Swap
+                                player.position.set(oldEnemyPos);
+                                swapTarget.position.set(oldPlayerPos);
+                                // Re-use blink flash for the teleport visual
+                                player.abilities.blinkFlashTimer = GameConfig.blinkFlashDecay;
+                                player.abilities.blinkOrigin     = oldPlayerPos;
+                                player.abilities.blinkDest       = new Vector3f(oldEnemyPos);
+                                // Brief stun-flash on the enemy
+                                swapTarget.hitFlashTimer = 0.35f;
+                                todoSwapCooldown = GameConfig.todoCooldown;
+                            }
+                        }
+                        lastJ = jHeld;
+
+                        // ── PAPER FIGURINE SUBSTITUTE (V hold) ────────────────
+                        // Hold V while ready → primed. Any incoming damage while
+                        // primed is negated; player teleports back; paper dummy
+                        // placed at old position explodes after a short delay.
+                        if (substituteCooldown > 0f) substituteCooldown -= deltaTime;
+                        boolean vHeld = glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS;
+                        substitutePrimed = vHeld && !player.debugMode && substituteCooldown <= 0f;
+
+                        // Intercept damage while primed
+                        if (substitutePrimed && enemyManager.pendingPlayerDamage > 0f) {
+                            // Save old position for dummy, move player backward
+                            Vector3f oldPos = new Vector3f(player.position);
+                            // Look direction from camera yaw/pitch
+                            float cyaw = camera.yaw, cpitch = camera.pitch;
+                            float backX = -(float)(Math.cos(cpitch) * Math.cos(cyaw));
+                            float backY =  0f;
+                            float backZ = -(float)(Math.cos(cpitch) * Math.sin(cyaw));
+                            float bLen  = (float)Math.sqrt(backX*backX + backZ*backZ);
+                            if (bLen > 0.001f) { backX /= bLen; backZ /= bLen; }
+                            float bd = GameConfig.substituteBackDist;
+                            // Candidate teleport destination
+                            float tx = oldPos.x + backX * bd;
+                            float tz = oldPos.z + backZ * bd;
+                            // Snap Y to terrain surface
+                            int bx = (int) Math.floor(tx), bz2 = (int) Math.floor(tz);
+                            float ty = oldPos.y;
+                            for (int by2 = (int) oldPos.y + 8; by2 >= 1; by2--) {
+                                if (world.getBlock(bx, by2, bz2).isSolid()
+                                        && !world.getBlock(bx, by2+1, bz2).isSolid()) {
+                                    ty = by2 + 1f;
+                                    break;
+                                }
+                            }
+                            player.position.set(tx, ty, tz);
+                            player.setVelocityY(0f);
+
+                            // White flash on teleport
+                            player.abilities.blinkFlashTimer = GameConfig.blinkFlashDecay;
+                            player.abilities.blinkOrigin     = oldPos;
+                            player.abilities.blinkDest       = new Vector3f(player.position);
+
+                            // Place a paper dummy at old position
+                            float lt = GameConfig.substituteDummyLifetime;
+                            substituteDummies.add(new float[]{ oldPos.x, oldPos.y, oldPos.z, lt, lt });
+
+                            // Negate damage and start cooldown
+                            enemyManager.pendingPlayerDamage = 0f;
+                            substitutePrimed   = false;
+                            substituteCooldown = GameConfig.substituteCooldown;
+                        }
+
+                        // Tick paper dummies; explode when timer expires
+                        for (int di = substituteDummies.size() - 1; di >= 0; di--) {
+                            float[] dm = substituteDummies.get(di);
+                            dm[3] -= deltaTime;
+                            if (dm[3] <= 0f) {
+                                // Detonate — damage all enemies in blast radius
+                                float[] blastEv = { dm[0], dm[1], dm[2],
+                                        GameConfig.substituteBlastRadius };
+                                enemyManager.processExplosion(blastEv,
+                                        GameConfig.substituteBlastDamage);
+                                // Spawn paper-fragment DroppedItems (snow block shards)
+                                Random fragRng = new Random();
+                                for (int fi = 0; fi < 14; fi++) {
+                                    float ang = fragRng.nextFloat() * (float)(2 * Math.PI);
+                                    float spd = 4f + fragRng.nextFloat() * 6f;
+                                    Vector3f fv = new Vector3f(
+                                            (float)Math.cos(ang) * spd,
+                                            2f + fragRng.nextFloat() * 5f,
+                                            (float)Math.sin(ang) * spd);
+                                    droppedItems.add(new DroppedItem(
+                                            (int)dm[0], (int)dm[1], (int)dm[2],
+                                            Block.SNOW, fv));
+                                }
+                                // Screen shake
+                                activeShakeDuration  = 0.3f;
+                                activeShakeAmplitude = 0.18f;
+                                smashShakeTimer      = Math.max(smashShakeTimer, activeShakeDuration);
+                                substituteDummies.remove(di);
+                            }
+                        }
+
+                        // ── CONTEXTUAL ABILITY HINTS ──────────────────────────
+                        // Stand first-deploy: show a one-liner explaining TAB/LMB/X
+                        boolean nowStandDeployed = player.stand.isDeployed();
+                        if (nowStandDeployed && !wasStandDeployed && !standHintShown) {
+                            hintText  = "Stand deployed!   TAB = pilot drone  ·  LMB = auto-fire bolt  ·  X = recall";
+                            hintTimer = 5.0f;
+                            standHintShown = true;
+                        }
+                        wasStandDeployed = nowStandDeployed;
+
+                        // Seal first-placement: show a one-liner explaining B/N
+                        int nowSealCount = player.seals.getSealCount();
+                        if (nowSealCount > 0 && lastSealCount == 0 && !sealHintShown) {
+                            hintText  = "Seal placed!   B = warp to it  ·  N = reclaim it  ·  Place up to 5";
+                            hintTimer = 5.0f;
+                            sealHintShown = true;
+                        }
+                        lastSealCount = nowSealCount;
 
                         // ── CANNONBALL: preload chunks at CHARGE START ─────────
                         // The charge window (~2.5 s) is used as preload time.
@@ -703,6 +879,10 @@ public class Window {
                 }
             }
 
+            // ── TUTORIAL TIMER TICKS (always, regardless of pause/help state) ──
+            if (welcomeTimer > 0f) welcomeTimer = Math.max(0f, welcomeTimer - rawDeltaTime);
+            if (hintTimer    > 0f) hintTimer    = Math.max(0f, hintTimer    - rawDeltaTime);
+
             // ── RENDER ────────────────────────────────────────────────────────
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -761,6 +941,16 @@ public class Window {
                     if (flashStr > compositeOverlayStr) {
                         compositeOverlayStr = flashStr;
                         compositeOverlayColor = new Vector3f(0.95f, 0.98f, 1.0f);
+                    }
+                }
+                // ── SUBSTITUTE PRIMED OVERLAY ─────────────────────────────
+                // Subtle white pulsing vignette while the substitute is ready.
+                if (substitutePrimed) {
+                    float timeSecs = (float) glfwGetTime();
+                    float pulseStr = 0.10f + 0.05f * (float) Math.sin(timeSecs * 8.0f);
+                    if (pulseStr > compositeOverlayStr) {
+                        compositeOverlayStr   = pulseStr;
+                        compositeOverlayColor = new Vector3f(0.95f, 0.97f, 1.0f);
                     }
                 }
 
@@ -1150,6 +1340,32 @@ public class Window {
                     shader.setUniform("alphaMultiplier", 1.0f);
                 }
 
+                // 7a. Render Paper Figurine Substitute dummies
+                if (!substituteDummies.isEmpty()) {
+                    com.leaf.game.render.ModelMesh dummyModel =
+                            com.leaf.game.render.AssetManager.get().getModel("player");
+                    if (dummyModel != null) {
+                        for (float[] dm : substituteDummies) {
+                            float lifeFrac = dm[3] / dm[4]; // 1=fresh … 0=about to explode
+                            // Scale expands slightly as timer runs out (0.9 → 1.2)
+                            float dscale = 0.9f + (1f - lifeFrac) * 0.3f;
+                            float alpha  = Math.max(0.15f, lifeFrac * 0.90f);
+                            shader.setUniform("alphaMultiplier", alpha);
+                            // White-paper tint
+                            shader.setUniform("overlayVignetteStrength", 0.55f + (1f - lifeFrac) * 0.30f);
+                            shader.setUniform("overlayVignetteColor", new Vector3f(0.95f, 0.97f, 1.0f));
+                            Matrix4f dummyMat = new Matrix4f()
+                                    .translate(dm[0], dm[1], dm[2])
+                                    .scale(dscale);
+                            shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(dummyMat));
+                            dummyModel.render();
+                        }
+                        shader.setUniform("overlayVignetteStrength", 0f);
+                        shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
+                        shader.setUniform("alphaMultiplier", 1.0f);
+                    }
+                }
+
                 // 7. Render Items
                 for (DroppedItem item : droppedItems) {
                     Mesh itemMesh = getItemMesh(item.blockType);
@@ -1189,6 +1405,7 @@ public class Window {
                     if (showNoiseViewer) noiseVis.renderWindow(player);
                     if (showChat || !chatHistory.isEmpty()) renderChatBox(wh[0]);
                     if (isPaused)        renderPauseMenu(ww[0], wh[0]);
+                    if (showHelp)        renderHelpScreen(ww[0], wh[0]);
                 }
             }
 
@@ -1395,8 +1612,8 @@ public class Window {
     }
 
     private void renderPauseMenu(float w, float h) {
-        ImGui.setNextWindowPos(w / 2.0f - 100.0f, h / 2.0f - 80.0f);
-        ImGui.setNextWindowSize(200.0f, 160.0f);
+        ImGui.setNextWindowPos(w / 2.0f - 100.0f, h / 2.0f - 110.0f);
+        ImGui.setNextWindowSize(200.0f, 210.0f);
         ImGui.begin("Paused",
                 imgui.flag.ImGuiWindowFlags.NoDecoration | imgui.flag.ImGuiWindowFlags.NoMove);
         ImGui.text("Game Paused");
@@ -1405,6 +1622,11 @@ public class Window {
         if (ImGui.button("Resume", 180, 30)) {
             isPaused = false;
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
+        ImGui.spacing();
+        if (ImGui.button("Controls  [F1]", 180, 30)) {
+            // Open help without closing pause — player can read then ESC back
+            showHelp = true;
         }
         ImGui.spacing();
         if (ImGui.button("Save Game", 180, 30))  SaveManager.saveGame(world, player, inventory);
@@ -2110,6 +2332,18 @@ public class Window {
             renderAbilityHUD(draw, screenW, screenH);
         }
 
+        // ── WELCOME BANNER ───────────────────────────────────────────────────
+        // Shown for ~6 s after the world first loads. Guides new players to F1.
+        if (welcomeTimer > 0f && !showHelp) {
+            renderWelcomeBanner(draw, screenW, screenH, welcomeTimer);
+        }
+
+        // ── CONTEXTUAL HINT BANNER ────────────────────────────────────────────
+        // One-liners that fire on first stand deploy / first seal placement.
+        if (hintTimer > 0f && hintText != null && !showHelp) {
+            renderHintBanner(draw, screenW, screenH, hintTimer, hintText);
+        }
+
         // ── WAVE COUNTER ──────────────────────────────────────────────────────
         // Top-left: "WAVE N — next in Xs" or "MAX ENEMIES REACHED"
         if (!player.stand.isInStandPerspective() && !player.debugMode) {
@@ -2264,39 +2498,45 @@ public class Window {
      */
     private void renderAbilityHUD(imgui.ImDrawList draw, float screenW, float screenH) {
         // ── Ability icon layout: two rows, bottom-right ───────────────────────
-        // Row 1 (top, further from edge): Q  E F G  Z   — original four abilities
-        // Row 2 (bottom, near edge):      X  H  B       — Stand + Seal abilities
+        // Row 1 (top): Q  E  F  G  Z  K  J   — combat abilities + swap
+        // Row 2 (bot): X  H  B  V             — Stand + Seal + Substitute
         float iconSize = 28f;
         float spacing  = 6f;
         int   black    = ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.8f);
         int   grey     = ImGui.colorConvertFloat4ToU32(0.2f, 0.2f, 0.2f, 0.8f);
 
-        // Row 1 — Q / E / F / G / Z / K
+        // Row 1 — Q / E / F / G / Z / K / J
         {
-            float totalW = 6 * iconSize + 5 * spacing;
+            float totalW = 7 * iconSize + 6 * spacing;
             float startX = screenW - totalW - 14f;
             float startY = screenH - iconSize * 2f - spacing - 14f;
 
-            String[] labels   = { "Q",  "E",  "F",  "G",  "Z",  "K"  };
-            String[] tooltips = { "Dash", "Blink", "Cleave", "Canon", "Rewind", "Pillar" };
-            float[]  fracs    = {
+            String[] labels   = { "Q",   "E",    "F",     "G",      "Z",      "K",      "J"   };
+            String[] tooltips = { "Dash","Blink","Slash","Cannon","Rewind","Pillar","Swap" };
+            // todoSwapCooldown: 1 = full cooldown, 0 = ready  → frac = cooldown / max
+            float todoFrac = (GameConfig.todoCooldown > 0f)
+                    ? Math.max(0f, Math.min(1f, todoSwapCooldown / GameConfig.todoCooldown))
+                    : 0f;
+            float[]  fracs = {
                     player.abilities.getDashCooldownFrac(),
                     player.abilities.getBlinkCooldownFrac(),
                     player.attacks.getMeleeCooldownFrac(),
                     player.abilities.getCannonCooldownFrac(),
                     player.abilities.getRewindCooldownFrac(),
-                    player.abilities.getPillarCooldownFrac()
+                    player.abilities.getPillarCooldownFrac(),
+                    todoFrac
             };
             int[] colors = {
-                    ImGui.colorConvertFloat4ToU32(0.45f, 0.88f, 1.0f, 1.0f),  // dash: cyan
-                    ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1.0f, 1.0f),  // blink: white
-                    ImGui.colorConvertFloat4ToU32(1.0f,  0.55f, 0.06f, 1.0f), // cleave: amber-gold
-                    ImGui.colorConvertFloat4ToU32(1.0f,  0.75f, 0.1f, 1.0f),  // cannonball: gold
-                    ImGui.colorConvertFloat4ToU32(0.3f,  0.6f,  1.0f, 1.0f),  // rewind: blue
-                    ImGui.colorConvertFloat4ToU32(0.6f,  0.6f,  0.65f, 1.0f)
+                    ImGui.colorConvertFloat4ToU32(0.45f, 0.88f, 1.0f, 1.0f),  // Q dash: cyan
+                    ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1.0f, 1.0f),  // E blink: white
+                    ImGui.colorConvertFloat4ToU32(1.0f,  0.55f, 0.06f, 1.0f), // F cleave: amber
+                    ImGui.colorConvertFloat4ToU32(1.0f,  0.75f, 0.1f, 1.0f),  // G cannon: gold
+                    ImGui.colorConvertFloat4ToU32(0.3f,  0.6f,  1.0f, 1.0f),  // Z rewind: blue
+                    ImGui.colorConvertFloat4ToU32(0.6f,  0.6f,  0.65f, 1.0f), // K pillar: grey
+                    ImGui.colorConvertFloat4ToU32(0.95f, 0.4f,  1.0f, 1.0f)   // J swap: pink-magenta
             };
 
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < labels.length; i++) {
                 float x = startX + i * (iconSize + spacing);
                 draw.addRectFilled(x, startY, x + iconSize, startY + iconSize, grey, 5f);
                 float fillH = iconSize * fracs[i];
@@ -2313,9 +2553,9 @@ public class Window {
             }
         }
 
-        // Row 2 — X (Stand)  H (Seal place)  B (Seal teleport)
+        // Row 2 — X (Stand)  H (Seal place)  B (Seal teleport)  V (Substitute)
         {
-            float totalW = 3 * iconSize + 2 * spacing;
+            float totalW = 4 * iconSize + 3 * spacing;
             float startX = screenW - totalW - 14f;
             float startY = screenH - iconSize - 14f;
 
@@ -2323,23 +2563,34 @@ public class Window {
             boolean standDeployed = player.stand.isDeployed();
             float   standFrac     = player.stand.getRedeployCooldownFrac();
             int     standColor    = standDeployed
-                    ? ImGui.colorConvertFloat4ToU32(1.0f, 0.82f, 0.15f, 1.0f)   // gold: deployed
-                    : ImGui.colorConvertFloat4ToU32(0.4f, 0.65f, 0.9f,  1.0f);  // blue: ready
+                    ? ImGui.colorConvertFloat4ToU32(1.0f, 0.82f, 0.15f, 1.0f)
+                    : ImGui.colorConvertFloat4ToU32(0.4f, 0.65f, 0.9f,  1.0f);
 
-            // H: seal place — cyan when ready, dim on cooldown
-            float sealPlaceFrac = player.seals.getPlaceCooldownFrac();
+            // H: seal place — cyan when ready
+            float sealPlaceFrac  = player.seals.getPlaceCooldownFrac();
             int   sealPlaceColor = ImGui.colorConvertFloat4ToU32(0.2f, 0.92f, 0.92f, 1.0f);
 
-            // B: seal teleport — teal when ready, darker on cooldown
-            float sealTpFrac   = player.seals.getTeleportCooldownFrac();
-            int   sealTpColor  = ImGui.colorConvertFloat4ToU32(0.1f, 0.75f, 0.65f, 1.0f);
+            // B: seal teleport — teal when ready
+            float sealTpFrac  = player.seals.getTeleportCooldownFrac();
+            int   sealTpColor = ImGui.colorConvertFloat4ToU32(0.1f, 0.75f, 0.65f, 1.0f);
 
-            String[] labels2   = { "X",     "H",     "B"      };
-            String[] tooltips2 = { "Stand", "Seal",  "Warp"   };
-            float[]  fracs2    = { standDeployed ? 1f : standFrac, sealPlaceFrac, sealTpFrac };
-            int[]    colors2   = { standColor, sealPlaceColor, sealTpColor };
+            // V: substitute — bright white when primed, dim when on cooldown
+            float subFrac  = (GameConfig.substituteCooldown > 0f)
+                    ? Math.max(0f, Math.min(1f, substituteCooldown / GameConfig.substituteCooldown))
+                    : 0f;
+            // When primed the icon is fully lit regardless of cooldown display
+            float subFracDisplay = substitutePrimed ? 1f : (1f - subFrac);
+            int   subColor = substitutePrimed
+                    ? ImGui.colorConvertFloat4ToU32(1.0f, 1.0f, 1.0f, 1.0f) // bright white when primed
+                    : ImGui.colorConvertFloat4ToU32(0.85f, 0.87f, 0.95f, 1.0f);
 
-            for (int i = 0; i < 3; i++) {
+            String[] labels2   = { "X",     "H",    "B",    "V"    };
+            String[] tooltips2 = { "Stand", "Seal", "Warp", "Sub"  };
+            float[]  fracs2    = { standDeployed ? 1f : standFrac,
+                                   sealPlaceFrac, sealTpFrac, subFracDisplay };
+            int[]    colors2   = { standColor, sealPlaceColor, sealTpColor, subColor };
+
+            for (int i = 0; i < labels2.length; i++) {
                 float x = startX + i * (iconSize + spacing);
                 draw.addRectFilled(x, startY, x + iconSize, startY + iconSize, grey, 5f);
                 float fillH = iconSize * fracs2[i];
@@ -2348,9 +2599,12 @@ public class Window {
                             x + iconSize, startY + iconSize, colors2[i], 5f);
                 }
                 // Stand icon: bright outline when deployed
-                float outlineThick = (i == 0 && standDeployed) ? 2.5f : 1.5f;
+                // Substitute icon: bright pulsing outline when primed
+                boolean specialBorder = (i == 0 && standDeployed) || (i == 3 && substitutePrimed);
+                float outlineThick = specialBorder ? 2.5f : 1.5f;
+                int   outlineCol   = specialBorder ? colors2[i] : black;
                 draw.addRect(x, startY, x + iconSize, startY + iconSize,
-                        (i == 0 && standDeployed) ? colors2[0] : black, 5f, 0, outlineThick);
+                        outlineCol, 5f, 0, outlineThick);
                 draw.addText(x + 9f, startY + 7f, black, labels2[i]);
                 draw.addText(x + 9f, startY + 7f,
                         ImGui.colorConvertFloat4ToU32(1f, 1f, 1f, 0.9f), labels2[i]);
@@ -2358,6 +2612,171 @@ public class Window {
                         ImGui.colorConvertFloat4ToU32(0.8f, 0.8f, 0.8f, 0.7f), tooltips2[i]);
             }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  HELP SCREEN  (F1)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void renderHelpScreen(float screenW, float screenH) {
+        float winW = Math.min(680f, screenW - 40f);
+        float winH = Math.min(680f, screenH - 40f);
+        ImGui.setNextWindowPos(screenW / 2f - winW / 2f, screenH / 2f - winH / 2f);
+        ImGui.setNextWindowSize(winW, winH);
+        ImGui.setNextWindowBgAlpha(0.94f);
+        ImGui.begin("Controls & Abilities",
+                imgui.flag.ImGuiWindowFlags.NoResize |
+                imgui.flag.ImGuiWindowFlags.NoMove);
+
+        ImGui.textDisabled("  [F1] or [ESC] to close.");
+        ImGui.separator();
+        ImGui.spacing();
+
+        // ── MOVEMENT ──────────────────────────────────────────────────────────
+        ImGui.textColored(0.5f, 0.9f, 1.0f, 1.0f, "MOVEMENT");
+        ImGui.separator();
+        helpRow("WASD",              "Move around.");
+        helpRow("Space",             "Jump.");
+        helpRow("Shift",             "Sprint.");
+        helpRow("Fall + Shift land", "Ground Smash — craters the terrain and hurts all enemies nearby. The higher you fall from, the bigger the crater.");
+        ImGui.spacing();
+
+        // ── COMBAT ABILITIES ──────────────────────────────────────────────────
+        ImGui.textColored(1.0f, 0.55f, 0.1f, 1.0f, "COMBAT ABILITIES");
+        ImGui.separator();
+        helpRow("[Q]   Dash",     "Instant burst in the direction you're moving. Short cooldown. Leaves a fading ghost trail behind you.");
+        helpRow("[E]   Blink",    "Teleport to where you're looking (up to ~22 blocks away). Short cooldown.");
+        helpRow("[F]   Slash",    "Wide swing that hits every enemy in a cone in front of you.");
+        helpRow("[K]   Pillar",   "A stone spire shoots up beneath you and launches you into the air.");
+        helpRow("[C]   Snipe",    "Hold [C] to charge up a crystal bolt, release to fire. Longer charge = bigger explosion on hit.");
+        helpRow("[G]   Cannonball","Hold [G] to charge, release to launch yourself like a cannonball. Explodes on impact. Dotted arc shows your trajectory while charging.");
+        ImGui.spacing();
+
+        // ── SPECIAL ABILITIES ─────────────────────────────────────────────────
+        ImGui.textColored(0.95f, 0.4f, 1.0f, 1.0f, "SPECIAL ABILITIES");
+        ImGui.separator();
+        helpRow("[J]   Position Swap",   "Instantly swap places with the nearest enemy in range. Good for getting out of a bad spot or dropping them off a cliff.");
+        helpRow("[V]   Substitute",      "Hold [V] to prime a paper decoy. The next hit you take is completely negated — you teleport backward and a paper dummy explodes in your place, damaging nearby enemies.");
+        ImGui.spacing();
+
+        // ── MANHATTAN TRANSFER ────────────────────────────────────────────────
+        ImGui.textColored(1.0f, 0.85f, 0.15f, 1.0f, "MANHATTAN TRANSFER  (Stand / Drone)");
+        ImGui.separator();
+        helpRow("[X]",                  "Deploy your drone above you. Press [X] again to recall it.");
+        helpRow("[TAB]",                "Swap into the drone's perspective (pilot it). Press [TAB] again to return to your body.");
+        helpRow("Piloting — WASD",      "Fly the drone. Space = up, Shift = down.");
+        helpRow("Piloting — click",     "Fire a shot in the direction the drone is facing.");
+        helpRow("Not piloting — click", "The drone auto-targets and shoots the nearest enemy it can see.");
+        helpRow("Two dots (top right)", "Show whether you and the drone both have a clear shot. Both must be green to fire.");
+        helpRow("Gold diamond",         "Marks your drone on screen. When it's out of view, an arrow points to it from the edge of the screen.");
+        ImGui.spacing();
+
+        // ── MINATO'S SEAL ─────────────────────────────────────────────────────
+        ImGui.textColored(0.2f, 0.95f, 0.95f, 1.0f, "MINATO'S SEAL  (Teleport Anchors)");
+        ImGui.separator();
+        helpRow("[H]",   "Throw a seal — it sticks to the first surface it hits.");
+        helpRow("[B]",   "Teleport instantly to the seal closest to your crosshair. The targeted seal glows bigger and brighter.");
+        helpRow("[N]",   "Pull the targeted seal back to you without teleporting.");
+        helpRow("Tip",   "You can place up to 5 seals at a time. Great for escape routes, high ground, and repositioning. Arrows on the screen edges point to seals that are out of view.");
+        ImGui.spacing();
+
+        // ── WORLD & UI ────────────────────────────────────────────────────────
+        ImGui.textColored(0.75f, 0.75f, 0.75f, 1.0f, "WORLD & BUILDING");
+        ImGui.separator();
+        helpRow("Hold left click",  "Break the block you're looking at.");
+        helpRow("Right click",      "Place the block selected in your hotbar.");
+        helpRow("1 – 9",            "Switch hotbar slot.");
+        helpRow("[P]",              "Spawn a test enemy where you're looking. Enemies also spawn automatically in waves.");
+        helpRow("[ESC]",            "Pause menu.");
+        helpRow("[F1]",             "This screen.");
+        helpRow("[F3]",             "Debug info (your position, frame rate, render distance).");
+        ImGui.spacing();
+
+        // ── ENEMY TYPES ───────────────────────────────────────────────────────
+        ImGui.textColored(0.9f, 0.3f, 0.1f, 1.0f, "ENEMIES");
+        ImGui.separator();
+        helpRow("Red-orange",   "Grunt — standard enemy. Medium speed and health.");
+        helpRow("Yellow-green", "Stalker — very fast but fragile. Has a long detection range so it will spot you first.");
+        helpRow("Purple",       "Brute — slow but very tanky and hits hard up close.");
+        helpRow("Waves",        "Enemies keep spawning in waves. The wave counter is in the top-left corner.");
+        helpRow("Health bars",  "Float above each enemy. Green = healthy, red = almost dead.");
+
+        ImGui.end();
+    }
+
+    /**
+     * Single row in the help screen: yellow key label on the left,
+     * wrapped description on the right. Fixed column split at 230px.
+     */
+    private void helpRow(String key, String desc) {
+        ImGui.textColored(1.0f, 0.88f, 0.25f, 1.0f, "  " + key);
+        ImGui.sameLine(230f);
+        ImGui.pushTextWrapPos(0f);   // wrap at window right edge
+        ImGui.text(desc);
+        ImGui.popTextWrapPos();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  TUTORIAL BANNERS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * "Press F1 for controls" banner shown for the first few seconds of play.
+     * Fades in over 0.4 s and out over 1 s.
+     */
+    private void renderWelcomeBanner(imgui.ImDrawList draw,
+                                     float screenW, float screenH, float timer) {
+        float alpha;
+        if      (timer > 5.6f) alpha = (6f - timer) / 0.4f;   // fade-in 0→0.4 s
+        else if (timer < 1.0f) alpha = timer;                   // fade-out last 1 s
+        else                   alpha = 1f;
+        alpha = Math.max(0f, Math.min(1f, alpha));
+
+        int bg     = ImGui.colorConvertFloat4ToU32(0.04f, 0.04f, 0.14f, 0.90f * alpha);
+        int border = ImGui.colorConvertFloat4ToU32(0.4f,  0.85f, 1.0f,  0.55f * alpha);
+        int white  = ImGui.colorConvertFloat4ToU32(1.0f,  1.0f,  1.0f,  alpha);
+        int cyan   = ImGui.colorConvertFloat4ToU32(0.4f,  0.9f,  1.0f,  alpha);
+        int black  = ImGui.colorConvertFloat4ToU32(0f,    0f,    0f,    alpha);
+
+        float bW = 400f, bH = 56f;
+        float bX = screenW / 2f - bW / 2f;
+        float bY = screenH * 0.19f;
+
+        draw.addRectFilled(bX, bY, bX + bW, bY + bH, bg, 8f);
+        draw.addRect(bX, bY, bX + bW, bY + bH, border, 8f, 0, 1.8f);
+
+        String line1 = "You have lots of abilities!";
+        String line2 = "Press  [F1]  for the full controls & ability guide.";
+
+        // Approximate centering (default font ~7 px/char)
+        draw.addText(bX + bW / 2f - line1.length() * 3.6f,     bY + 8f,  black, line1);
+        draw.addText(bX + bW / 2f - line1.length() * 3.6f - 1, bY + 7f,  white, line1);
+        draw.addText(bX + bW / 2f - line2.length() * 3.6f,     bY + 29f, black, line2);
+        draw.addText(bX + bW / 2f - line2.length() * 3.6f - 1, bY + 28f, cyan,  line2);
+    }
+
+    /**
+     * One-liner contextual hint (e.g. first stand deploy or first seal placed).
+     * Fades out over the last 0.6 s of its duration.
+     */
+    private void renderHintBanner(imgui.ImDrawList draw,
+                                   float screenW, float screenH,
+                                   float timer, String text) {
+        float alpha = (timer < 0.6f) ? timer / 0.6f : 1f;
+        alpha = Math.max(0f, Math.min(1f, alpha));
+
+        int bg    = ImGui.colorConvertFloat4ToU32(0.0f, 0.0f, 0.0f,  0.72f * alpha);
+        int fg    = ImGui.colorConvertFloat4ToU32(1.0f, 0.88f, 0.3f, alpha);
+        int black = ImGui.colorConvertFloat4ToU32(0f,   0f,   0f,    alpha);
+
+        // Rough text width: 7 px/char
+        float tw = text.length() * 7.0f;
+        float bX = screenW / 2f - tw / 2f - 12f;
+        float bY = 36f; // just below the wave counter line
+
+        draw.addRectFilled(bX, bY, bX + tw + 24f, bY + 22f, bg, 4f);
+        draw.addText(bX + 13f, bY + 5f, black, text);
+        draw.addText(bX + 12f, bY + 4f, fg,    text);
     }
 
     private void updateBreaking(float deltaTime) {

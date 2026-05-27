@@ -256,4 +256,22 @@ public class GameConfig {
     public static float pillarTaper     = 0.15f;   // REDUCED: How much it widens per block downwards (more subtle)
     public static float pillarCooldown  = 2.5f;    // Seconds before it can be cast again
 
+    // ── TODO'S TECHNIQUE (J key) ──────────────────────────────────────────────
+    // Tap J to instantly swap positions with the nearest visible enemy.
+    public static float todoRange    = 30f;  // max swap range (blocks)
+    public static float todoCooldown = 4.0f; // seconds between swaps
+
+    // ── PAPER FIGURINE SUBSTITUTE (V hold) ────────────────────────────────────
+    // Hold V while cooldown is ready to prime a paper-dummy guardian.
+    // When damage is received while primed: negate it, teleport player back,
+    // leave a paper dummy at the old position that detonates after a short delay.
+    public static float substituteBackDist     = 5.5f;  // how far back the player teleports (blocks)
+    public static float substituteDummyLifetime = 1.0f; // seconds before dummy explodes
+    public static float substituteBlastRadius  = 3.5f;  // dummy explosion radius (blocks)
+    public static float substituteBlastDamage  = 80f;   // dummy explosion damage (hp)
+    public static float substituteCooldown     = 10.0f; // seconds between activations
+
+    // ── HEALING (Hold J) ──────────────────────────────────────────────────────
+    public static float healPerSecond = 15.0f;  // HP restored per second while holding
+    public static float healCooldown  = 4.0f;   // Seconds before you can heal again after stopping
 }
