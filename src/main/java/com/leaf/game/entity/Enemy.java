@@ -148,8 +148,8 @@ public class Enemy {
             }
             default -> {
                 maxHealth      = 50f;
-                speed          = 3f;
-                damagePerSec   = 8f;
+                speed          = 2f;
+                damagePerSec   = 2f;
                 aggroRange     = 20f;
                 attackRange    = 1.5f;
                 attackInterval = 1.5f;
@@ -270,13 +270,13 @@ public class Enemy {
         float ndx = dx / hd;
         float ndz = dz / hd;
 
-        // ── MUD underfoot check — slow to 30% speed ───────────────────────────
+        // ── MUD underfoot check — slow to 10% speed ───────────────────────────
         int underX = (int) Math.floor(position.x);
         int underY = (int) Math.floor(position.y - 0.1f);
         int underZ = (int) Math.floor(position.z);
         boolean onMud = world.getBlock(underX, underY, underZ) == Block.MUD;
 
-        float step = speed * dt * (onMud ? 0.30f : 1.0f);
+        float step = speed * dt * (onMud ? 0.10f : 1.0f);
 
         // ── Try X then Z independently ────────────────────────────────────────
         float nx = position.x + ndx * step;

@@ -144,9 +144,26 @@ public class Player {
         // Must run before abilities so that drone-perspective takes priority.
         // Returns true when the player is piloting the drone — body is frozen.
         if (stand.tick(window, camera, world, deltaTime)) {
-            // Let the attack controller run while piloting the drone so 'C' works!
             attacks.tick(window, stand.standCamera, world, deltaTime);
-            return;   // caller must skip physics
+            // Gravity still applies to the player body while piloting the drone
+            boolean inWaterD = isBlockLiquid(world, position.x, position.y + 0.1f, position.z);
+            if (inWaterD && !wasInWater) highestY = position.y;
+            wasInWater = inWaterD;
+            if (inWaterD) {
+                velocityY *= (float) Math.pow(0.85f, deltaTime * 60f);
+                velocityY  = Math.max(-4.0f, Math.min(4.0f, velocityY));
+            } else {
+                velocityY -= GameConfig.GRAVITY * deltaTime;
+            }
+            float dyD = velocityY * deltaTime;
+            if (dyD != 0f) {
+                position.y += dyD;
+                if (resolveCollisionY(world, dyD)) { velocityY = 0f; onGround = true; }
+                else                                { onGround = false; }
+            }
+            if (onGround) highestY = position.y;
+            else if (position.y > highestY) highestY = position.y;
+            return;
         }
 
         // ── ABILITY TICK ───────────────────────────────────────────────────────
@@ -188,7 +205,7 @@ public class Player {
             dx = abilities.cannonVelX * deltaTime;
             dz = abilities.cannonVelZ * deltaTime;
 
-        } else if (abilities.isPillaring || abilities.isHealing) {     // <--- ADD THIS BRANCH
+        } else if (abilities.isPillaring || abilities.isHealing) {    
             // Lock horizontal movement while performing stone pillar rise or channeling heal
             dx = 0f;
             dz = 0f;

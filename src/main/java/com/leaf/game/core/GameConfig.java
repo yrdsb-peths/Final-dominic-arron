@@ -219,26 +219,26 @@ public class GameConfig {
 
     // ── ENEMIES ───────────────────────────────────────────────────────────────
     // GRUNT — standard pursuer.  Medium speed, medium health.
-    public static float gruntSpeed          = 3.5f;
+    public static float gruntSpeed          = 1.5f;
     public static float gruntHealth         = 50f;
-    public static float gruntDamagePerSec   = 8f;
+    public static float gruntDamagePerSec   = 2f;
     public static float gruntAggroRange     = 24f;
     public static float gruntAttackRange    = 1.5f;
     /** Seconds between discrete attacks. Damage per hit = damagePerSec * interval. */
     public static float gruntAttackInterval = 1.5f;
 
     // BRUTE — slow tank.  High health, heavy damage.
-    public static float bruteSpeed          = 1.8f;
+    public static float bruteSpeed          = 1.2f;
     public static float bruteHealth         = 200f;
-    public static float bruteDamagePerSec   = 20f;
+    public static float bruteDamagePerSec   = 4f;
     public static float bruteAggroRange     = 16f;
     public static float bruteAttackRange    = 2.0f;
     public static float bruteAttackInterval = 2.2f;
 
     // STALKER — fast glass cannon.  Long aggro, fragile.
-    public static float stalkerSpeed          = 6.5f;
+    public static float stalkerSpeed          = 2.5f;
     public static float stalkerHealth         = 25f;
-    public static float stalkerDamagePerSec   = 6f;
+    public static float stalkerDamagePerSec   = 1f;
     public static float stalkerAggroRange     = 36f;
     public static float stalkerAttackRange    = 1.5f;
     public static float stalkerAttackInterval = 0.9f;
@@ -263,7 +263,7 @@ public class GameConfig {
     // ── QUAGMIRE (M key) ─────────────────────────────────────────────────────
     // A wave of mud erupts from slightly in front of the player and races
     // toward the targeted enemy, trapping it on contact.
-    public static float quagmireRange        = 22f;  // max target range (blocks)
+    public static float quagmireRange        = 30f;  // max target range (blocks)
     public static float quagmireTrapDuration = 4.0f; // seconds the enemy is frozen
     public static float quagmireSpreadSpeed  = 14f;  // blocks/sec the mud wave travels
     public static float quagmireCooldown     = 8.0f;

@@ -634,11 +634,15 @@ public class Window {
                         }
 
                         // ── DRAIN remaining enemy damage into player health ────
-                        // Floor at 1 HP — enemies can wound but never kill the player
                         if (enemyManager.pendingPlayerDamage > 0f) {
-                            player.health = Math.max(1f,
-                                    player.health - enemyManager.pendingPlayerDamage);
+                            player.health -= enemyManager.pendingPlayerDamage;
                             enemyManager.pendingPlayerDamage = 0f;
+                            if (player.health <= 0f) {
+                                System.out.println("You died!");
+                                player.position.set(1000, 255, 1000);
+                                player.setVelocityY(0f);
+                                player.health = player.maxHealth;
+                            }
                         }
 
                         // Tick paper dummies; explode when timer expires

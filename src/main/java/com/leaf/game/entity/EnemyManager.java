@@ -205,8 +205,12 @@ public class EnemyManager {
                 if (world.getBlock(bx, by, bz).isSolid()
                         && !world.getBlock(bx, by + 1, bz).isSolid()
                         && !world.getBlock(bx, by + 2, bz).isSolid()) {
-                    // Two clear blocks above solid ground — good spawn
-                    return new Vector3f(sx, by + 1f, sz);
+                    // Confirm open sky above — reject cave floors reachable via sky-shafts
+                    boolean openSky = true;
+                    for (int sy = by + 3; sy < Chunk.HEIGHT; sy++) {
+                        if (world.getBlock(bx, sy, bz).isSolid()) { openSky = false; break; }
+                    }
+                    if (openSky) return new Vector3f(sx, by + 1f, sz);
                 }
             }
         }

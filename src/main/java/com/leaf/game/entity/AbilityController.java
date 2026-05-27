@@ -329,14 +329,14 @@ public class AbilityController {
 
         // ── HEALING (hold L) ──────────────────────────────────────────────────
         boolean lHeld = glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS;
-        if (lHeld && healCooldownTimer <= 0f && !player.debugMode) {
+        if (lHeld && healCooldownTimer <= 0f && !player.debugMode
+                && player.health < player.maxHealth) {
             isHealing = true;
             float gain = GameConfig.healPerSecond * dt;
             player.health = Math.min(player.maxHealth, player.health + gain);
-            blendOverlay(new Vector3f(0.15f, 0.85f, 0.35f), 0.18f, dt); // gentle green glow
+            blendOverlay(new Vector3f(0.15f, 0.85f, 0.35f), 0.18f, dt);
         } else {
             if (isHealing && !lHeld) {
-                // Start cooldown when key released after healing
                 healCooldownTimer = GameConfig.healCooldown;
             }
             isHealing = false;
