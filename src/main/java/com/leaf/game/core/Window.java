@@ -314,6 +314,7 @@ public class Window {
         // ── ENEMY SYSTEM ─────────────────────────────────────────────────────
         this.enemyManager = new EnemyManager();
         player.stand.setEnemyManager(enemyManager);
+        player.attacks.setEnemyManager(enemyManager);
 
         TimeController tc = TimeController.getInstance();
 
@@ -702,15 +703,15 @@ public class Window {
                 shader.bind();
                 shader.setUniform("sunDirection",
                         new Vector3f(GameConfig.sunDirX, GameConfig.sunDirY, GameConfig.sunDirZ));
-                shader.setUniform("sunStrength",     GameConfig.sunStrength);
+                shader.setUniform("sunStrength", GameConfig.sunStrength);
                 shader.setUniform("ambientStrength", GameConfig.ambientStrength);
 
                 boolean isCameraUnderwater = world.getBlock(
-                        (int)Math.floor(camera.position.x),
-                        (int)Math.floor(camera.position.y),
-                        (int)Math.floor(camera.position.z)).isLiquid();
+                        (int) Math.floor(camera.position.x),
+                        (int) Math.floor(camera.position.y),
+                        (int) Math.floor(camera.position.z)).isLiquid();
                 shader.setUniform("isUnderwater", isCameraUnderwater ? 1 : 0);
-                shader.setUniform("cameraY",      camera.position.y);
+                shader.setUniform("cameraY", camera.position.y);
 
                 // ── TIME DILATION VIGNETTE ────────────────────────────────────
                 // Slow motion: subtle blue-grey wash
@@ -721,43 +722,43 @@ public class Window {
                 Vector3f vignetteColor;
                 if (slowFactor > 0.001f) {
                     vignetteStrength = slowFactor * 0.28f;
-                    vignetteColor    = new Vector3f(0.52f, 0.58f, 0.70f); // blue-grey
+                    vignetteColor = new Vector3f(0.52f, 0.58f, 0.70f); // blue-grey
                 } else if (fastFactor > 0.001f) {
                     vignetteStrength = fastFactor * 0.22f;
-                    vignetteColor    = new Vector3f(0.80f, 0.55f, 0.18f); // warm orange
+                    vignetteColor = new Vector3f(0.8f, 0.55f, 0.18f); // warm orange
                 } else {
                     vignetteStrength = 0f;
-                    vignetteColor    = new Vector3f(0f, 0f, 0f);
+                    vignetteColor = new Vector3f(0f, 0f, 0f);
                 }
                 shader.setUniform("timeVignetteStrength", vignetteStrength);
-                shader.setUniform("timeVignetteColor",    vignetteColor);
+                shader.setUniform("timeVignetteColor", vignetteColor);
 
                 // ── ABILITY + ATTACK OVERLAY VIGNETTE ────────────────────────
                 // Use whichever overlay is currently stronger so neither system
                 // silently stomps the other during simultaneous effects.
                 float abilityOverlayStr = player.abilities.getOverlayStrength();
-                float attackOverlayStr  = player.attacks.getOverlayStrength();
+                float attackOverlayStr = player.attacks.getOverlayStrength();
                 Vector3f compositeOverlayColor;
-                float    compositeOverlayStr;
+                float compositeOverlayStr;
                 if (attackOverlayStr >= abilityOverlayStr) {
                     compositeOverlayColor = player.attacks.getOverlayColor();
-                    compositeOverlayStr   = attackOverlayStr;
+                    compositeOverlayStr = attackOverlayStr;
                 } else {
                     compositeOverlayColor = player.abilities.getOverlayColor();
-                    compositeOverlayStr   = abilityOverlayStr;
+                    compositeOverlayStr = abilityOverlayStr;
                 }
                 // ── SEAL TELEPORT OVERLAY ─────────────────────────────────
                 // White-ish flash when the player zips to a seal.
                 if (player.seals.teleportFlash > 0f) {
                     float flashStr = (player.seals.teleportFlash / GameConfig.sealTeleportFlash) * 0.55f;
                     if (flashStr > compositeOverlayStr) {
-                        compositeOverlayStr   = flashStr;
+                        compositeOverlayStr = flashStr;
                         compositeOverlayColor = new Vector3f(0.95f, 0.98f, 1.0f);
                     }
                 }
 
                 shader.setUniform("overlayVignetteStrength", compositeOverlayStr);
-                shader.setUniform("overlayVignetteColor",    compositeOverlayColor);
+                shader.setUniform("overlayVignetteColor", compositeOverlayColor);
                 // Default alpha multiplier (1.0 = no change). Ghost rendering overrides this.
                 shader.setUniform("alphaMultiplier", 1.0f);
                 // Default: no texture sampling. Set to 1 + bind texture for ModelMesh rendering.
@@ -769,7 +770,10 @@ public class Window {
                 boolean inStandView = player.stand.isInStandPerspective();
                 if (!inStandView) {
                     float fovBoost = player.getCameraFovBoost();
-                    camera.dynamicFov = (fovBoost > 0.1f) ? GameConfig.fov + fovBoost : -1f;
+                    // Use Math.abs so negative zoom-in (sniper charge) is applied as well as
+                    // positive zoom-out (flight speed). Previously the condition fovBoost > 0.1f
+                    // silently discarded any negative value, making sniper zoom do nothing.
+                    camera.dynamicFov = (Math.abs(fovBoost) > 0.1f) ? GameConfig.fov + fovBoost : -1f;
                 }
 
                 // ── VIEW MATRIX + ROLL ────────────────────────────────────────
@@ -777,16 +781,17 @@ public class Window {
                 // no roll, no screen shake, no attack pitch — clean drone view only.
                 // All rendering uses standCamera so the player sees through the drone.
                 Matrix4f baseView;
-                float    rollAngle;
+                float rollAngle;
                 Matrix4f projection;
                 Vector3f shakeOffset;
 
                 if (inStandView) {
-                    Camera sc   = player.stand.standCamera;
-                    sc.dynamicFov = -1f; // standard FOV while piloting
-                    baseView    = sc.getViewMatrix();
-                    rollAngle   = 0f;
-                    projection  = sc.getProjectionMatrix();
+                    Camera sc = player.stand.standCamera;
+                    float droneFovBoost = player.attacks.getFovBoost();
+                    sc.dynamicFov = (Math.abs(droneFovBoost) > 0.1f) ? GameConfig.fov + droneFovBoost : -1f;
+                    baseView = sc.getViewMatrix();
+                    rollAngle = 0f;
+                    projection = sc.getProjectionMatrix();
                     shakeOffset = new Vector3f(0f);
                 } else {
                     // Attack pitch offset is non-destructive: add, build, subtract.
@@ -794,8 +799,8 @@ public class Window {
                     camera.pitch += attackPitch;
                     baseView = camera.getViewMatrix();
                     camera.pitch -= attackPitch;
-                    rollAngle   = player.getCameraRoll();
-                    projection  = camera.getProjectionMatrix();
+                    rollAngle = player.getCameraRoll();
+                    projection = camera.getProjectionMatrix();
                     shakeOffset = computeShakeOffset(rawDeltaTime);
                 }
 
@@ -826,15 +831,15 @@ public class Window {
                     camera.position.sub(shakeOffset);
                 }
 
-                int playerCX = Math.floorDiv((int)player.position.x, Chunk.SIZE);
-                int playerCZ = Math.floorDiv((int)player.position.z, Chunk.SIZE);
-                int R        = GameConfig.renderDistance;
-                int playerCY = Math.floorDiv((int)player.position.y, Chunk.HEIGHT);
-                int cyMin    = Math.min(playerCY - 4, -4);
+                int playerCX = Math.floorDiv((int) player.position.x, Chunk.SIZE);
+                int playerCZ = Math.floorDiv((int) player.position.z, Chunk.SIZE);
+                int R = GameConfig.renderDistance;
+                int playerCY = Math.floorDiv((int) player.position.y, Chunk.HEIGHT);
+                int cyMin = Math.min(playerCY - 4, -4);
 
                 // Frustum culling uses the CLEAN view (no roll, no shake) to avoid
                 // popping at the frustum edges during roll animations.
-                Matrix4f cleanMvp  = new Matrix4f(projection).mul(baseView);
+                Matrix4f cleanMvp = new Matrix4f(projection).mul(baseView);
                 shader.setUniform("mvp", cleanMvp);
                 float[] frustumPlanes = extractFrustumPlanes(cleanMvp);
 
@@ -847,7 +852,7 @@ public class Window {
                             for (int cy = 0; cy >= cyMin; cy--) {
                                 Chunk c = world.getChunk(playerCX + dx, cy, playerCZ + dz);
                                 if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
-                                    dirtyList.add(new int[]{dx, dz, dx*dx + dz*dz, cy});
+                                    dirtyList.add(new int[]{dx, dz, dx * dx + dz * dz, cy});
                                 }
                             }
                         }
@@ -858,13 +863,12 @@ public class Window {
                         if (compiled >= maxMeshCompilesPerFrame) break;
                         Chunk c = world.getChunk(playerCX + e[0], e[3], playerCZ + e[1]);
                         if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
-                            world.buildChunkMeshes(c); compiled++;
+                            world.buildChunkMeshes(c);
+                            compiled++;
                         }
                     }
                 }
-
-                // ── PASS 1: OPAQUE ────────────────────────────────────────────
-                // Use the shaken/rolled MVP for actual rendering
+// ── PASS 1: OPAQUE ────────────────────────────────────────────
                 Matrix4f renderMvp = new Matrix4f(projection).mul(view);
                 shader.setUniform("mvp", renderMvp);
 
@@ -896,7 +900,12 @@ public class Window {
                     }
                 }
                 glDisable(GL_BLEND);
-                // ── RENDER GRAPPLE CABLE & LASER SIGHT ─────────────────────────
+
+                // ── PASS 3: OVERLAYS, ENTITIES & PROJECTILES (Blend Enabled) ──
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                // 1. Render Grapple Cable & Laser Sight
                 FlightController fc = player.flightController;
                 boolean grappleActive = player.debugMode && fc.getMode() == FlightController.FlightMode.GRAPPLE;
                 boolean voidAiming = player.attacks.getChargeFrac() > 0f;
@@ -912,22 +921,20 @@ public class Window {
                         isLaser = !fc.isHooked();
                         renderBlock = isLaser ? Block.CRYSTAL_ROSE : Block.CRYSTAL_AMETHYST;
                     } else if (voidAiming) {
-                        // Void shard laser sight!
                         targetPoint = player.attacks.getAimTarget(camera, world);
                         isLaser = true;
                         renderBlock = Block.CRYSTAL_AMETHYST;
                     }
 
                     if (targetPoint != null) {
-                        Vector3f ropeDir  = new Vector3f(targetPoint).sub(playerHand);
-                        float    ropeDist = ropeDir.length();
+                        Vector3f ropeDir = new Vector3f(targetPoint).sub(playerHand);
+                        float ropeDist = ropeDir.length();
 
                         if (ropeDist > 0.1f) {
                             ropeDir.normalize();
                             org.joml.Quaternionf ropeRot = new org.joml.Quaternionf().rotationTo(new org.joml.Vector3f(0, 0, 1), ropeDir);
 
                             float thickness = isLaser ? 0.008f : 0.04f;
-                            // Make Void Shard laser pulse slightly with charge
                             if (voidAiming) thickness += player.attacks.getChargeFrac() * 0.015f;
 
                             Matrix4f ropeModel = new Matrix4f()
@@ -943,11 +950,8 @@ public class Window {
                         }
                     }
                 }
-                // ── VOID SHARD BOLTS ──────────────────────────────────────────
-                // Each bolt is rendered as a spinning, slightly scaled crystal cube.
-                // Scale grows with charge so a full-power shot looks visibly larger.
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                // 2. Render Void Shard Bolts
                 for (AttackController.ActiveBolt bolt : player.attacks.activeBolts) {
                     float scale = 0.20f + bolt.chargeF * 0.24f;
                     Matrix4f boltModel = new Matrix4f()
@@ -959,87 +963,17 @@ public class Window {
                     shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
                     getItemMesh(Block.CRYSTAL_AMETHYST).render();
                 }
-                glDisable(GL_BLEND);
 
-                // ── STAND DRONE + BOLTS (Manhattan Transfer) ─────────────────
+                // 3. Render Stand Drone (Manhattan Transfer)
                 if (player.stand.isDeployed()) {
-                    float bob      = (float)Math.sin(player.stand.bobPhase) * GameConfig.standHoverBob;
-                    float droneSpin = (float)(glfwGetTime() * 1.5);
-                    Vector3f sp    = player.stand.standPos;
+                    float bob = (float) Math.sin(player.stand.bobPhase) * GameConfig.standHoverBob;
+                    float droneSpin = (float) (glfwGetTime() * 1.5);
+                    Vector3f sp = player.stand.standPos;
 
-                    // Render drone using AssetManager model (or procedural saucer fallback)
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                    shader.setUniform("alphaMultiplier", 1.0f);
-                    Matrix4f droneModel = new Matrix4f()
-                            .translate(sp.x, sp.y + bob, sp.z)
-                            .rotateY(droneSpin)
-                            .scale(0.55f);
-                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
-                    // Optionally bind texture if available
-                    com.leaf.game.render.Texture standTex = com.leaf.game.render.AssetManager.get().getTexture("stand");
-                    if (standTex != null) {
-                        shader.setUniform("useTexture", 1);
-                        standTex.bind();
-                    }
-                    com.leaf.game.render.AssetManager.get().getModel("stand").render();
-                    if (standTex != null) {
-                        shader.setUniform("useTexture", 0);
-                    }
-
-                    // Blocked-LOS warning: overlay orange flash on drone when shot is blocked
-                    float blockedF = player.stand.getBlockedFlash();
-                    if (blockedF > 0f) {
-                        float alpha = (blockedF / GameConfig.standBlockedFlashTime) * 0.55f;
-                        shader.setUniform("alphaMultiplier", alpha);
-                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
-                        getItemMesh(Block.CRATER_BLOOM).render(); // warm orange tint
-                    }
-                    glDisable(GL_BLEND);
-
-                    // Render stand redirect bolts as spinning CRYSTAL_CITRINE cubes
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                    for (StandController.StandBolt bolt : player.stand.activeBolts) {
-                        Matrix4f boltModel = new Matrix4f()
-                                .translate(bolt.pos.x, bolt.pos.y, bolt.pos.z)
-                                .rotateY(bolt.spinPhase)
-                                .rotateX(bolt.spinPhase * 0.6f)
-                                .rotateZ(bolt.spinPhase * 0.4f)
-                                .scale(0.18f);
-                        shader.setUniform("alphaMultiplier", 1.0f);
-                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
-                        getItemMesh(Block.CRYSTAL_CITRINE).render();
-                    }
-
-                    glDisable(GL_BLEND);
-                }
-
-                // ── SEALS (Minato's Seal) ────────────────────────────────────
-                // In-flight seal projectiles
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                for (SealController.SealProjectile proj : player.seals.inFlightSeals) {
-                    Matrix4f projModel = new Matrix4f()
-                            .translate(proj.pos.x, proj.pos.y, proj.pos.z)
-                            .rotateY(proj.spinPhase)
-                            .scale(0.15f);
-                    shader.setUniform("alphaMultiplier", 1.0f);
-                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(projModel));
-                    getItemMesh(Block.CRYSTAL_CITRINE).render();
-                }
-                // ── STAND DRONE + BOLTS (Manhattan Transfer) ─────────────────
-                if (player.stand.isDeployed()) {
-                    float bob      = (float)Math.sin(player.stand.bobPhase) * GameConfig.standHoverBob;
-                    float droneSpin = (float)(glfwGetTime() * 1.5);
-                    Vector3f sp    = player.stand.standPos;
-
-                    // ── FIX: Only render the physical drone body if we are NOT piloting it
                     if (!inStandView) {
-                        // Render drone using AssetManager model (or procedural saucer fallback)
-                        glEnable(GL_BLEND);
-                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        // A. Physical Drone Body
                         shader.setUniform("alphaMultiplier", 1.0f);
+
                         Matrix4f droneModel = new Matrix4f()
                                 .translate(sp.x, sp.y + bob, sp.z)
                                 .rotateY(droneSpin)
@@ -1056,20 +990,47 @@ public class Window {
                             shader.setUniform("useTexture", 0);
                         }
 
-                        // Blocked-LOS warning: overlay orange flash on drone when shot is blocked
+                        // B. Permanent Pulsing Energy Aura (The Yellow Glow)
+                        float timeSecs = (float) glfwGetTime();
+                        float pulseScale = 1.1f + 0.05f * (float) Math.sin(timeSecs * 4.0f);
+                        float pulseAlpha = 0.40f + 0.15f * (float) Math.cos(timeSecs * 4.0f);
+
+
+                        shader.setUniform("alphaMultiplier", pulseAlpha);
+                        Matrix4f glowModel = new Matrix4f()
+                                .translate(sp.x, sp.y + bob, sp.z)
+                                .rotateY(-droneSpin * 0.5f)
+                                .rotateX(timeSecs * 0.3f)
+                                .scale(pulseScale);
+
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(glowModel));
+                        getItemMesh(Block.CRYSTAL_CITRINE).render();
+
+                        // C. Inner Core Flare (Actively Targeted Highlight)
+                        boolean aimingAtStand = player.attacks.isAimingAtStand(camera);
+                        if (aimingAtStand) {
+                            shader.setUniform("alphaMultiplier", 0.85f);
+                            Matrix4f targetCore = new Matrix4f()
+                                    .translate(sp.x, sp.y + bob, sp.z)
+                                    .rotateY(droneSpin * 2.0f)
+                                    .scale(0.85f);
+                            shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(targetCore));
+                            getItemMesh(Block.CRYSTAL_CITRINE).render();
+                        }
+
+                        // Blocked-LOS Warning
                         float blockedF = player.stand.getBlockedFlash();
                         if (blockedF > 0f) {
                             float alpha = (blockedF / GameConfig.standBlockedFlashTime) * 0.55f;
                             shader.setUniform("alphaMultiplier", alpha);
                             shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(droneModel));
-                            getItemMesh(Block.CRATER_BLOOM).render(); // warm orange tint
+                            getItemMesh(Block.CRATER_BLOOM).render();
                         }
-                        glDisable(GL_BLEND);
+
+                        shader.setUniform("alphaMultiplier", 1.0f);
                     }
 
-                    // Render stand redirect bolts as spinning CRYSTAL_CITRINE cubes
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    // D. Stand Redirect Bolts
                     for (StandController.StandBolt bolt : player.stand.activeBolts) {
                         Matrix4f boltModel = new Matrix4f()
                                 .translate(bolt.pos.x, bolt.pos.y, bolt.pos.z)
@@ -1081,20 +1042,28 @@ public class Window {
                         shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(boltModel));
                         getItemMesh(Block.CRYSTAL_CITRINE).render();
                     }
-                    glDisable(GL_BLEND);
                 }
 
-                // (Note: The old 3D Pointer code that was here has been cleanly removed
-                // because we are using your awesome 2D UI Edge Arrow now!)
-                // because we are using your awesome 2D UI Edge Arrow now!)
-                // Placed seals — Pass A: normal depth (visible when unobstructed)
+                // 4. In-Flight Seal Projectiles
+                for (SealController.SealProjectile proj : player.seals.inFlightSeals) {
+                    Matrix4f projModel = new Matrix4f()
+                            .translate(proj.pos.x, proj.pos.y, proj.pos.z)
+                            .rotateY(proj.spinPhase)
+                            .scale(0.15f);
+                    shader.setUniform("alphaMultiplier", 1.0f);
+                    shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(projModel));
+                    getItemMesh(Block.CRYSTAL_CITRINE).render();
+                }
+
+                // 5. Placed Seals (Normal Pass & Ghost Pass)
                 if (!player.seals.placedSeals.isEmpty()) {
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                     com.leaf.game.render.Texture sealTex = com.leaf.game.render.AssetManager.get().getTexture("seal");
-                    if (sealTex != null) { shader.setUniform("useTexture", 1); sealTex.bind(); }
+                    if (sealTex != null) {
+                        shader.setUniform("useTexture", 1);
+                        sealTex.bind();
+                    }
                     for (SealController.SealEntry seal : player.seals.placedSeals) {
-                        float pulse = 0.85f + 0.15f * (float)Math.sin(seal.pulsePhase);
+                        float pulse = 0.85f + 0.15f * (float) Math.sin(seal.pulsePhase);
                         float scale = seal.targeted
                                 ? 0.45f * GameConfig.sealTargetedScale
                                 : 0.45f;
@@ -1106,14 +1075,12 @@ public class Window {
                         shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(sealModel));
                         com.leaf.game.render.AssetManager.get().getModel("seal").render();
                     }
-                    if (sealTex != null) { shader.setUniform("useTexture", 0); }
-                    glDisable(GL_BLEND);
+                    if (sealTex != null) {
+                        shader.setUniform("useTexture", 0);
+                    }
 
-                    // Placed seals — Pass B: through-wall ghost (depth-test OFF)
-                    // This lets the player always see their seals even through terrain.
+                    // Through-wall ghost pass
                     glDisable(GL_DEPTH_TEST);
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                     for (SealController.SealEntry seal : player.seals.placedSeals) {
                         float ghostAlpha = GameConfig.sealThroughWallAlpha
                                 * (seal.targeted ? 1.0f : 0.7f);
@@ -1128,56 +1095,43 @@ public class Window {
                         shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(sealModel));
                         com.leaf.game.render.AssetManager.get().getModel("seal").render();
                     }
-                    glDisable(GL_BLEND);
                     glEnable(GL_DEPTH_TEST);
                     shader.setUniform("alphaMultiplier", 1.0f);
                 }
 
-                // ── ENEMIES ───────────────────────────────────────────────────
-                // Render each enemy as a red-tinted player-capsule model.
-                // Dead enemies that still have a hit-flash timer get a bright flash.
+                // 6. Render Enemies
                 if (!enemyManager.getEnemies().isEmpty()) {
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                     com.leaf.game.render.ModelMesh enemyModel =
                             com.leaf.game.render.AssetManager.get().getModel("player");
                     for (Enemy enemy : enemyManager.getEnemies()) {
-                        float flashF = enemy.hitFlashTimer > 0f
-                                ? (enemy.hitFlashTimer / 0.18f)
-                                : 0f;
-                        // Alpha: alive = 1.0, dead but still flashing → fade out
+                        float flashF = enemy.hitFlashTimer > 0f ? (enemy.hitFlashTimer / 0.18f) : 0f;
                         float alpha = enemy.alive ? 1.0f : flashF;
                         if (alpha < 0.02f) continue;
 
                         shader.setUniform("alphaMultiplier", alpha);
-                        // Hit-flash: white for alive, brighter red for dead
                         if (flashF > 0f) {
                             shader.setUniform("overlayVignetteStrength", flashF * 0.55f);
-                            shader.setUniform("overlayVignetteColor",
-                                    new Vector3f(1.0f, 0.2f, 0.15f));
+                            shader.setUniform("overlayVignetteColor", new Vector3f(1.0f, 0.2f, 0.15f));
                         }
 
                         Matrix4f enemyMat = new Matrix4f()
                                 .translate(enemy.position.x, enemy.position.y, enemy.position.z)
                                 .scale(0.5f);
-                        shader.setUniform("mvp",
-                                new Matrix4f(projection).mul(view).mul(enemyMat));
+                        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(enemyMat));
                         enemyModel.render();
 
-                        // Restore overlay after per-enemy flash
                         if (flashF > 0f) {
                             shader.setUniform("overlayVignetteStrength", 0f);
                             shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
                         }
                     }
                     shader.setUniform("alphaMultiplier", 1.0f);
-                    glDisable(GL_BLEND);
                 }
 
-                // ── ITEMS ─────────────────────────────────────────────────────
+                // 7. Render Items
                 for (DroppedItem item : droppedItems) {
                     Mesh itemMesh = getItemMesh(item.blockType);
-                    float bob = (float)Math.sin(item.age * 3.0f) * 0.05f;
+                    float bob = (float) Math.sin(item.age * 3.0f) * 0.05f;
                     Matrix4f itemModel = new Matrix4f()
                             .translate(item.position.x, item.position.y + bob, item.position.z)
                             .rotateY(item.age * 1.5f);
@@ -1186,18 +1140,17 @@ public class Window {
                     itemMesh.render();
                 }
 
+                // 8. Render Remote Player
                 if (network != null && network.connected) {
                     remotePlayer.render(shader, projection, view);
                 }
 
-                // ── ABILITY GHOST TRAILS ──────────────────────────────────────
-                // Rendered in transparent pass (GL_BLEND already disabled above,
-                // re-enable just for this section).
+                // 9. Render Ability Ghost Trails
                 renderAbilityGhosts(shader, projection, view);
 
+                glDisable(GL_BLEND);
                 shader.unbind();
             }
-
             // ── IMGUI ─────────────────────────────────────────────────────────
             imguiGlfw.newFrame();
             ImGui.newFrame();
@@ -1588,61 +1541,144 @@ public class Window {
                 // Outline the exclamation mark so it pops beautifully inside the gold box
                 draw.addRect(centerIconX - 2.5f, centerIconY - 9f, centerIconX + 2.5f, centerIconY + 3f, outline, 0f, 0, 1.5f);
                 draw.addRect(centerIconX - 2.5f, centerIconY + 6f, centerIconX + 2.5f, centerIconY + 11f, outline, 0f, 0, 1.5f);
+                // Outline the exclamation mark so it pops beautifully inside the gold box
+                draw.addRect(centerIconX - 2.5f, centerIconY - 9f, centerIconX + 2.5f, centerIconY + 3f, outline, 0f, 0, 1.5f);
+                draw.addRect(centerIconX - 2.5f, centerIconY + 6f, centerIconX + 2.5f, centerIconY + 11f, outline, 0f, 0, 1.5f);
+            } else {
+                // ── ON-SCREEN 2D DRONE OUTLINE (Always bright, always visible!) ──
+                float dScrX = (ndcX * 0.5f + 0.5f) * screenW;
+                float dScrY = (1f - (ndcY * 0.5f + 0.5f)) * screenH;
+
+                float dist = new Vector3f(dronePos).sub(camera.position).length();
+                // Scale the 2D UI box so it shrinks slightly at a distance, but never gets too tiny
+                float s = Math.max(14f, Math.min(45f, 400f / dist));
+
+                boolean aimingAtDrone = player.attacks.isAimingAtStand(camera);
+
+                int yellow    = ImGui.colorConvertFloat4ToU32(1.0f, 0.85f, 0.10f, 1.0f);
+                int dimYellow = ImGui.colorConvertFloat4ToU32(1.0f, 0.85f, 0.10f, 0.45f); // 45% opacity when idle
+
+                int brightRed = ImGui.colorConvertFloat4ToU32(1.0f, 0.0f, 0.0f, 1.0f); // 100% opacity bright red
+                int dimRed    = ImGui.colorConvertFloat4ToU32(1.0f, 0.0f, 0.0f, 0.45f); // 45% opacity dim red
+
+                int color     = aimingAtDrone ? brightRed : dimRed;
+                float thick = aimingAtDrone ? 3.0f : 1.5f;
+
+                // Draw a 2D Diamond Outline exactly over the drone
+                draw.addQuad(
+                        dScrX, dScrY - s,
+                        dScrX + s, dScrY,
+                        dScrX, dScrY + s,
+                        dScrX - s, dScrY, color, thick);
+
+                if (aimingAtDrone) {
+                    // Draw a striking inner crosshair when locked on
+                    float in = s * 0.5f;
+                    draw.addLine(dScrX - in, dScrY, dScrX + in, dScrY, yellow, 2.0f);
+                    draw.addLine(dScrX, dScrY - in, dScrX, dScrY + in, yellow, 2.0f);
+                }
             }
         }
         // Crosshair
-        int white = ImGui.colorConvertFloat4ToU32(1, 1, 1, 0.9f);
         int black = ImGui.colorConvertFloat4ToU32(0, 0, 0, 0.6f);
-        draw.addLine(cx - 11, cy, cx + 11, cy, black, 3.0f);
-        draw.addLine(cx, cy - 11, cx, cy + 11, black, 3.0f);
-        draw.addLine(cx - 10, cy, cx + 10, cy, white, 1.5f);
-        draw.addLine(cx, cy - 10, cx, cy + 10, white, 1.5f);
+        int white = ImGui.colorConvertFloat4ToU32(1.0f, 1.0f, 1.0f, 1.0f);
 
+        float chargeF = player.attacks.getChargeFrac();
+
+        if (chargeF > 0f) {
+            // ── SNIPER / CHARGING MODE — red shrinking circle crosshair ──────────
+            int red = ImGui.colorConvertFloat4ToU32(1.0f, 0.12f, 0.12f, 0.95f);
+            float ring = Math.max(4f, 18f - 13f * chargeF); // shrinks from 18 → 5 px as charge builds
+
+            draw.addCircle(cx, cy, ring, red, 32, 1.8f);
+            draw.addCircleFilled(cx, cy, 2.2f, red, 8);
+
+            // Four radiating lines — sniper style
+            float gap = ring + 2f, ext = gap + 9f;
+            draw.addLine(cx - ext, cy,  cx - gap, cy,  red, 1.5f);
+            draw.addLine(cx + gap, cy,  cx + ext, cy,  red, 1.5f);
+            draw.addLine(cx, cy - ext,  cx, cy - gap,  red, 1.5f);
+            draw.addLine(cx, cy + gap,  cx, cy + ext,  red, 1.5f);
+
+            // Charge % below crosshair
+            String pct = String.format("%.0f%%", chargeF * 100f);
+            draw.addText(cx - 10f, cy + ring + 8f, black, pct);
+            draw.addText(cx - 11f, cy + ring + 7f, red,   pct);
+
+        } else {
+            // ── NORMAL — plain white crosshair ────────────────────────────────────
+            draw.addLine(cx - 11, cy, cx + 11, cy, black, 3.0f);
+            draw.addLine(cx, cy - 11, cx, cy + 11, black, 3.0f);
+            draw.addLine(cx - 10, cy, cx + 10, cy, white, 1.5f);
+            draw.addLine(cx, cy - 10, cx, cy + 10, white, 1.5f);
+        }
+
+        // ── REDIRECT INDICATOR ──
+        boolean aimingAtDrone  = !player.stand.isInStandPerspective() && player.attacks.isAimingAtStand(camera);
+        boolean redirectReady  = aimingAtDrone && player.attacks.isRedirectAvailable(world);
+
+        if (aimingAtDrone) {
+            // Both states are now high-contrast Yellow/Gold
+            int yellow  = ImGui.colorConvertFloat4ToU32(1.0f, 0.85f, 0.10f, 1.0f);
+            int blackBg = ImGui.colorConvertFloat4ToU32(0.0f, 0.0f, 0.0f, 0.85f);
+
+            float circleRadius = 12.0f; // Shorter, tighter radius (down from 18)
+
+            if (redirectReady) {
+                draw.addRectFilled(cx + 12f, cy - 20f, cx + 115f, cy + 4f, blackBg, 4f);
+                draw.addText(cx + 18f, cy - 12f, yellow, "REDIRECT [C]");
+                draw.addCircle(cx, cy, circleRadius, yellow, 32, 2.5f);
+            } else {
+                draw.addRectFilled(cx + 12f, cy - 20f, cx + 110f, cy + 4f, blackBg, 4f);
+                draw.addText(cx + 18f, cy - 12f, yellow, "REFLECT [C]"); // Yellow indicator
+                draw.addCircle(cx, cy, circleRadius, yellow, 32, 2.0f); // Yellow circle
+            }
+        }
         // Health bar and hotbar — hidden while piloting the drone
         if (!player.stand.isInStandPerspective()) {
 
-        // Health bar
-        float hpWidth = 200f, hpHeight = 15f;
-        float hpX = cx - hpWidth / 2.0f, hpY = screenH - 75f;
-        draw.addRectFilled(hpX, hpY, hpX + hpWidth, hpY + hpHeight,
-                ImGui.colorConvertFloat4ToU32(0.2f, 0, 0, 0.8f));
-        float fillW = hpWidth * (Math.max(0, player.health) / player.maxHealth);
-        draw.addRectFilled(hpX, hpY, hpX + fillW, hpY + hpHeight,
-                ImGui.colorConvertFloat4ToU32(0.8f, 0.1f, 0.1f, 1.0f));
-        draw.addRect(hpX, hpY, hpX + hpWidth, hpY + hpHeight, black, 0f, 0, 2.0f);
+            // Health bar
+            float hpWidth = 200f, hpHeight = 15f;
+            float hpX = cx - hpWidth / 2.0f, hpY = screenH - 75f;
+            draw.addRectFilled(hpX, hpY, hpX + hpWidth, hpY + hpHeight,
+                    ImGui.colorConvertFloat4ToU32(0.2f, 0, 0, 0.8f));
+            float fillW = hpWidth * (Math.max(0, player.health) / player.maxHealth);
+            draw.addRectFilled(hpX, hpY, hpX + fillW, hpY + hpHeight,
+                    ImGui.colorConvertFloat4ToU32(0.8f, 0.1f, 0.1f, 1.0f));
+            draw.addRect(hpX, hpY, hpX + hpWidth, hpY + hpHeight, black, 0f, 0, 2.0f);
 
-        // Hotbar
-        float slotSize = 40.0f, spacing = 5.0f;
-        int   numSlots = 9;
-        float startX = cx - ((numSlots * slotSize + (numSlots - 1) * spacing) / 2.0f);
-        float startY = screenH - slotSize - 10.0f;
-        selectedBlock = hotbar[selectedSlot];
+            // Hotbar
+            float slotSize = 40.0f, spacing = 5.0f;
+            int   numSlots = 9;
+            float startX = cx - ((numSlots * slotSize + (numSlots - 1) * spacing) / 2.0f);
+            float startY = screenH - slotSize - 10.0f;
+            selectedBlock = hotbar[selectedSlot];
 
-        for (int i = 0; i < numSlots; i++) {
-            float x = startX + i * (slotSize + spacing);
-            int bgCol  = (i == selectedSlot)
-                    ? ImGui.colorConvertFloat4ToU32(0.6f, 0.6f, 0.6f, 0.8f)
-                    : ImGui.colorConvertFloat4ToU32(0.2f, 0.2f, 0.2f, 0.8f);
-            draw.addRectFilled(x, startY, x + slotSize, startY + slotSize, bgCol, 4.0f);
-            int outCol = (i == selectedSlot)
-                    ? ImGui.colorConvertFloat4ToU32(1.0f, 1.0f, 1.0f, 1.0f)
-                    : ImGui.colorConvertFloat4ToU32(0.0f, 0.0f, 0.0f, 0.8f);
-            draw.addRect(x, startY, x + slotSize, startY + slotSize, outCol, 4.0f, 0,
-                    (i == selectedSlot) ? 3.0f : 1.5f);
-            Block b     = hotbar[i];
-            int   count = inventory.getCount(b);
-            if (b != Block.AIR && count > 0) {
-                float shrink = 8.0f;
-                int blockCol = ImGui.colorConvertFloat4ToU32(b.r, b.g, b.b, 1.0f);
-                draw.addRectFilled(x + shrink, startY + shrink,
-                        x + slotSize - shrink, startY + slotSize - shrink, blockCol, 2.0f);
-                draw.addRect(x + shrink, startY + shrink,
-                        x + slotSize - shrink, startY + slotSize - shrink, black, 2.0f, 0, 1.5f);
-                String countStr = String.valueOf(count);
-                draw.addText(x + slotSize - 14, startY + slotSize - 18, black, countStr);
-                draw.addText(x + slotSize - 15, startY + slotSize - 19, white, countStr);
+            for (int i = 0; i < numSlots; i++) {
+                float x = startX + i * (slotSize + spacing);
+                int bgCol  = (i == selectedSlot)
+                        ? ImGui.colorConvertFloat4ToU32(0.6f, 0.6f, 0.6f, 0.8f)
+                        : ImGui.colorConvertFloat4ToU32(0.2f, 0.2f, 0.2f, 0.8f);
+                draw.addRectFilled(x, startY, x + slotSize, startY + slotSize, bgCol, 4.0f);
+                int outCol = (i == selectedSlot)
+                        ? ImGui.colorConvertFloat4ToU32(1.0f, 1.0f, 1.0f, 1.0f)
+                        : ImGui.colorConvertFloat4ToU32(0.0f, 0.0f, 0.0f, 0.8f);
+                draw.addRect(x, startY, x + slotSize, startY + slotSize, outCol, 4.0f, 0,
+                        (i == selectedSlot) ? 3.0f : 1.5f);
+                Block b     = hotbar[i];
+                int   count = inventory.getCount(b);
+                if (b != Block.AIR && count > 0) {
+                    float shrink = 8.0f;
+                    int blockCol = ImGui.colorConvertFloat4ToU32(b.r, b.g, b.b, 1.0f);
+                    draw.addRectFilled(x + shrink, startY + shrink,
+                            x + slotSize - shrink, startY + slotSize - shrink, blockCol, 2.0f);
+                    draw.addRect(x + shrink, startY + shrink,
+                            x + slotSize - shrink, startY + slotSize - shrink, black, 2.0f, 0, 1.5f);
+                    String countStr = String.valueOf(count);
+                    draw.addText(x + slotSize - 14, startY + slotSize - 18, black, countStr);
+                    draw.addText(x + slotSize - 15, startY + slotSize - 19, white , countStr);
+                }
             }
-        }
         } // end !isInStandPerspective (health bar + hotbar guard)
 
         // ── FLIGHT MODE INDICATOR ─────────────────────────────────────────────
@@ -1879,19 +1915,19 @@ public class Window {
                 if (i < placed) {
                     // Filled diamond
                     draw.addQuadFilled(px,       pipY - half,
-                                       px + half, pipY,
-                                       px,        pipY + half,
-                                       px - half, pipY, sealCyan);
+                            px + half, pipY,
+                            px,        pipY + half,
+                            px - half, pipY, sealCyan);
                     draw.addQuad(px,       pipY - half,
-                                 px + half, pipY,
-                                 px,        pipY + half,
-                                 px - half, pipY, black, 1.2f);
+                            px + half, pipY,
+                            px,        pipY + half,
+                            px - half, pipY, black, 1.2f);
                 } else {
                     // Empty diamond outline
                     draw.addQuad(px,       pipY - half,
-                                 px + half, pipY,
-                                 px,        pipY + half,
-                                 px - half, pipY, sealDim, 1.2f);
+                            px + half, pipY,
+                            px,        pipY + half,
+                            px - half, pipY, sealDim, 1.2f);
                 }
             }
 
@@ -1923,27 +1959,6 @@ public class Window {
                     : ImGui.colorConvertFloat4ToU32(1.0f, 0.65f, 0.2f, 0.9f);
             draw.addText(screenW - 80f, 12f, black, timeLabel);
             draw.addText(screenW - 81f, 11f, timeColor, timeLabel);
-
-            // ── VOID SHARD AIMING RETICLE ─────────────────────────────────────────
-            float chargeF = player.attacks.getChargeFrac();
-            if (chargeF > 0f) {
-                int purpleBg = ImGui.colorConvertFloat4ToU32(0.4f, 0.1f, 0.8f, 0.5f);
-                int purpleFg = ImGui.colorConvertFloat4ToU32(0.7f, 0.3f, 1.0f, 0.9f);
-
-                // Reticle shrinks as the shot reaches maximum power
-                float reticleRadius = 20f - (10f * chargeF);
-                draw.addCircle(cx, cy, reticleRadius, purpleBg, 16, 2.0f);
-
-                float chLen = 8f + 12f * chargeF;
-                draw.addLine(cx - chLen, cy, cx - 4f, cy, purpleFg, 2.0f);
-                draw.addLine(cx + 4f, cy, cx + chLen, cy, purpleFg, 2.0f);
-                draw.addLine(cx, cy - chLen, cx, cy - 4f, purpleFg, 2.0f);
-                draw.addLine(cx, cy + 4f, cx, cy + chLen, purpleFg, 2.0f);
-
-                String aimText = String.format("POWER %.0f%%", chargeF * 100f);
-                draw.addText(cx - 30, cy + 25, black, aimText);
-                draw.addText(cx - 31, cy + 24, purpleFg, aimText);
-            }
         }
     }
 

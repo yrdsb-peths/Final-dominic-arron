@@ -43,6 +43,7 @@ public class AttackController {
         public final float    chargeF;    // 0–1 — scales explosion radius & shake
         public       float    spinPhase;  // accumulates for visual spin
         public       boolean  alive = true;
+        public       boolean  redirected = false; // Prevents multiple redirects on the same stand
 
         ActiveBolt(Vector3f pos, Vector3f vel, float chargeF) {
             this.pos      = new Vector3f(pos);
@@ -104,6 +105,10 @@ public class AttackController {
      * Format: float[7] { originX, originY, originZ, dirX, dirY, dirZ, range }
      */
     public final List<float[]> pendingMeleeArcs = new ArrayList<>();
+
+    // ── Enemy Manager reference ───────────────────────────────────────────────
+    private EnemyManager enemyManager = null;
+    public void setEnemyManager(EnemyManager em) { this.enemyManager = em; }
 
     // ── Camera effects ────────────────────────────────────────────────────────
     // pitchOffset:  target value set per-phase, smoothed into smoothPitch.
@@ -337,6 +342,12 @@ public class AttackController {
     private void tickRanged(long window, Camera camera, World world, float dt) {
         boolean cHeld = glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS;
 
+        // FIX: Always allow camera FOV and Overlay to decay back to normal, regardless of cooldown!
+        if (!isCharging && meleePhase == MeleePhase.IDLE) {
+            blendOverlay(new Vector3f(0f, 0f, 0f), 0f, dt);
+            fovBoost = lerp(fovBoost, 0f, 14f * dt); // Snaps back smoothly
+        }
+
         // Block firing while melee is active or on cooldown
         if (rangedCooldown > 0f || meleePhase != MeleePhase.IDLE) {
             isCharging = false;
@@ -345,7 +356,6 @@ public class AttackController {
         }
 
         if (cHeld) {
-            // Start charging on leading edge (only if nothing else is running)
             if (!isCharging && !player.abilities.isAnyAbilityActive()) {
                 isCharging = true;
                 chargeTime = 0f;
@@ -353,37 +363,80 @@ public class AttackController {
             if (isCharging) {
                 chargeTime = Math.min(chargeTime + dt, GameConfig.voidShardMaxCharge);
                 float cf = chargeTime / GameConfig.voidShardMaxCharge;
-                // Deep-purple vignette swells with charge
-                blendOverlay(new Vector3f(0.50f + cf * 0.25f, 0.10f, 0.95f), 0.20f * cf, dt);
-                fovBoost = lerp(fovBoost, -4f * cf, 10f * dt);
+                // Intense Zoom
+                fovBoost = lerp(fovBoost, -35f * cf, 12f * dt);
             }
         } else if (isCharging) {
             // C released — fire
             float cf = Math.min(1f, chargeTime / GameConfig.voidShardMaxCharge);
-            fireBolt(camera, cf);
+            fireBolt(camera, world, cf);
             isCharging    = false;
             rangedCooldown = GameConfig.voidShardCooldown;
-            // Brief purple flash on release
             overlayColor.set(0.75f, 0.40f, 1.0f);
             overlayStrength = 0f;
-        }
-
-        // When nothing is active, let overlay and FOV decay naturally
-        if (!isCharging && meleePhase == MeleePhase.IDLE) {
-            blendOverlay(new Vector3f(0f, 0f, 0f), 0f, dt);
-            fovBoost = lerp(fovBoost, 0f, 8f * dt);
         }
 
         lastC = cHeld;
     }
 
-    private void fireBolt(Camera camera, float chargeF) {
+    private void fireBolt(Camera camera, World world, float chargeF) {
+        float speed = GameConfig.voidShardMinSpeed + chargeF * (GameConfig.voidShardMaxSpeed - GameConfig.voidShardMinSpeed);
+
+        // 1. If piloting the drone -> Fire from the drone!
+        if (player.stand.isInStandPerspective()) {
+            Vector3f dir = camera.getLookDirection();
+            Vector3f start = new Vector3f(camera.position).add(new Vector3f(dir).mul(1.4f));
+            ActiveBolt bolt = new ActiveBolt(start, new Vector3f(dir).mul(speed), chargeF);
+            bolt.redirected = true; // Prevents it from colliding with the drone it just fired from
+            activeBolts.add(bolt);
+
+            overlayColor.set(0.75f, 0.40f, 1.0f);
+            overlayStrength = 0f;
+            return;
+        }
+
+        // 2. Player shooting AT the drone -> Homing missile to the drone!
+        if (player.stand.isDeployed() && isAimingAtStand(camera)) {
+            // Lock direction dead-center on the drone. This guarantees it hits the 1.5f hitbox!
+            Vector3f dirToStand = new Vector3f(player.stand.standPos).sub(camera.position).normalize();
+            Vector3f start = new Vector3f(camera.position).add(new Vector3f(dirToStand).mul(1.4f));
+
+            activeBolts.add(new ActiveBolt(start, new Vector3f(dirToStand).mul(speed), chargeF));
+
+            overlayColor.set(1.0f, 0.85f, 0.1f);
+            overlayStrength = 0.30f;
+            return;
+        }
+
+        // 3. Normal Player Shot
+        Vector3f dir = camera.getLookDirection();
+        Vector3f start = new Vector3f(camera.position).add(new Vector3f(dir).mul(1.4f));
+        activeBolts.add(new ActiveBolt(start, new Vector3f(dir).mul(speed), chargeF));
+    }
+
+    private void fireFromStand(Camera camera, World world, float chargeF) {
+        if (enemyManager == null) return;
+        Enemy target = enemyManager.findClosestVisible(
+                world, player.stand.standPos, GameConfig.standShotRange);
+
+        Vector3f dir;
+        if (target != null) {
+            dir = new Vector3f(target.getCentre()).sub(player.stand.standPos).normalize();
+        } else {
+            // No enemy? Fire in the player's camera look direction so you see the redirect happen!
+            dir = camera.getLookDirection();
+        }
+
         float speed = GameConfig.voidShardMinSpeed
                 + chargeF * (GameConfig.voidShardMaxSpeed - GameConfig.voidShardMinSpeed);
-        Vector3f dir = camera.getLookDirection();
-        // Spawn 1.4 blocks in front so it clears the player's own hitbox
-        Vector3f startPos = new Vector3f(camera.position).add(new Vector3f(dir).mul(1.4f));
-        activeBolts.add(new ActiveBolt(startPos, new Vector3f(dir).mul(speed), chargeF));
+        Vector3f start = new Vector3f(player.stand.standPos);
+        ActiveBolt bolt = new ActiveBolt(start, new Vector3f(dir).mul(speed), chargeF);
+        bolt.redirected = true;  // skip the in-flight redirect check
+        activeBolts.add(bolt);
+
+        // Gold flash on HUD to confirm redirect fired
+        overlayColor.set(1.0f, 0.85f, 0.1f);
+        overlayStrength = 0.25f;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -410,6 +463,58 @@ public class AttackController {
 
             for (int s = 0; s < substeps && !hit; s++) {
                 bolt.pos.add(new Vector3f(bolt.vel).mul(subDt));
+
+                // ── MANHATTAN TRANSFER REDIRECT ──────────────────────────────────────
+                // When a bolt (fired toward the stand) reaches the drone, redirect it.
+                // Threshold 1.5 blocks — tight enough to only trigger for bolts that
+                // actually fly through the drone, not every bolt within 50 blocks.
+                // (The old threshold of 50.0f caused every shot to redirect regardless
+                // of direction, which was the root cause of the "redirects to random
+                // location" bug.)
+                if (!bolt.redirected && player.stand.isDeployed()) {
+                    float distToStand = new Vector3f(bolt.pos).distance(player.stand.standPos);
+                    if (distToStand < 1.5f) {
+                        bolt.redirected = true;
+                        bolt.pos.set(player.stand.standPos); // snap cleanly to drone centre
+
+                        Enemy targetEnemy = (enemyManager != null)
+                                ? enemyManager.findClosestVisible(world, player.stand.standPos,
+                                GameConfig.standShotRange)
+                                : null;
+
+                        float currentSpeed = bolt.vel.length();
+
+                        if (targetEnemy != null) {
+                            // ── Redirect to enemy ─────────────────────────────────────────────
+                            Vector3f targetDir = new Vector3f(targetEnemy.getCentre())
+                                    .sub(player.stand.standPos).normalize();
+                            bolt.vel.set(targetDir).mul(currentSpeed);
+                        } else {
+                            // ── Reflect off stand (no enemy in range) ────────────────────────
+                            Vector3f incomingDir = new Vector3f(bolt.vel).normalize();
+
+                            // Treat the saucer like a flat mirror (bounce off the top or bottom)
+                            Vector3f surfaceNormal = new Vector3f(0f, incomingDir.y > 0 ? -1f : 1f, 0f);
+
+                            float dot = incomingDir.dot(surfaceNormal);
+                            Vector3f reflected = new Vector3f(incomingDir).sub(new Vector3f(surfaceNormal).mul(2f * dot));
+                            bolt.vel.set(reflected).mul(currentSpeed);
+                        }
+                    }
+                }
+
+                // Check enemy collision first so we hit them directly
+                if (enemyManager != null) {
+                    for (Enemy enemy : enemyManager.getEnemies()) {
+                        if (enemy.alive && new Vector3f(bolt.pos).distance(enemy.getCentre()) < 1.8f) {
+                            boltImpact(bolt, world, (int)Math.floor(bolt.pos.x), (int)Math.floor(bolt.pos.y), (int)Math.floor(bolt.pos.z));
+                            bolt.alive = false;
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                if (hit) break;
 
                 int bx = (int) Math.floor(bolt.pos.x);
                 int by = (int) Math.floor(bolt.pos.y);
@@ -474,13 +579,13 @@ public class AttackController {
                 GameConfig.voidShardShakeStrength * (0.5f + bolt.chargeF * 0.5f));
 
         // Purple impact flash
-        overlayColor.set(0.65f, 0.25f, 1.0f);
-        overlayStrength = 0.40f;
+        //overlayColor.set(0.65f, 0.25f, 1.0f);
+        //overlayStrength = 0.40f;
     }
 
     private Block pickCrystalDebris() {
         Block[] options = { Block.CRYSTAL_AMETHYST, Block.CRYSTAL_QUARTZ,
-                            Block.CRYSTAL_CITRINE,  Block.CRYSTAL_ROSE };
+                Block.CRYSTAL_CITRINE,  Block.CRYSTAL_ROSE };
         return options[(int) (Math.random() * options.length)];
     }
 
@@ -532,5 +637,28 @@ public class AttackController {
             }
         }
         return new Vector3f(camera.position).add(dir.mul(max));
+    }
+
+    /**
+     * Returns true if the player's crosshair is aiming close enough
+     * to the stand drone to trigger a redirect.
+     */
+    /**
+     * Returns true if the player's crosshair is aiming close enough
+     * to the stand drone to trigger a redirect.
+     */
+    public boolean isAimingAtStand(Camera camera) {
+        if (!player.stand.isDeployed()) return false;
+        Vector3f toStand = new Vector3f(player.stand.standPos).sub(camera.position);
+        float dist = toStand.length();
+
+        // 0.92f gives a highly forgiving ~23 degree auto-aim cone
+        return new Vector3f(toStand).normalize().dot(camera.getLookDirection()) > 0.995f;
+    }
+
+    public boolean isRedirectAvailable(World world) {
+        if (!player.stand.isDeployed() || enemyManager == null) return false;
+        return enemyManager.findClosestVisible(
+                world, player.stand.standPos, GameConfig.standShotRange) != null;
     }
 }

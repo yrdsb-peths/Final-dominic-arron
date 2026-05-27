@@ -173,6 +173,9 @@ public class GameConfig {
     public static float voidShardMaxRadius    = 3.2f;   // explosion radius at full charge
     public static float voidShardCooldown     = 1.6f;   // seconds
     public static float voidShardShakeStrength = 0.18f; // base shake factor (scaled by chargeF)
+    // ── SNIPING UPDATE ────────────────────────────────────────────────────────
+    public static float standAimDot   = 0.993f; // cos(~6°) — how close crosshair must be to stand circle
+    public static float standAimRange = 12f;   // max distance to aim-redirect (blocks)
 
     // ── MANHATTAN TRANSFER (Stand / Drone — X key) ────────────────────────────
     // X          : deploy / recall stand
@@ -188,8 +191,8 @@ public class GameConfig {
     public static float standDestroyCooldown = 5.0f;  // seconds after destruction before re-deploy
     public static float standBlockedFlashTime = 0.5f; // HUD flash duration when LOS blocked
     public static float standShotRadius      = 2.5f;  // explosion radius on bolt impact (blocks)
-    public static float standHoverBob        = 0.4f;  // amplitude of idle bob (blocks)
-    public static float standHoverBobSpeed   = 1.8f;  // Hz of idle bob
+    public static float standHoverBob        = 0.1f;  // amplitude of idle bob (blocks)
+    public static float standHoverBobSpeed   = 0.5f;  // Hz of idle bob
 
     // ── MINATO'S SEAL (H / B / N keys) ───────────────────────────────────────
     // H : fire seal projectile — embeds on first solid surface hit
@@ -211,6 +214,6 @@ public class GameConfig {
      *   1 — face the direction of travel (look toward where you came from, i.e. away from origin)
      *   2 — look toward the nearest remaining seal after landing
      */
-    public static int sealLookMode = 2;
+    public static int sealLookMode = 1;
 
 }

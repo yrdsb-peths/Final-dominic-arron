@@ -291,14 +291,28 @@ public class SealController {
         switch (GameConfig.sealLookMode) {
 
             case 1: {
-                // Face direction of travel: look FROM origin TOWARD target.
-                Vector3f travel = new Vector3f(target.position).sub(origin);
-                float hDist = (float)Math.sqrt(travel.x * travel.x + travel.z * travel.z);
-                if (hDist > 0.01f) {
-                    camera.yaw   = (float)Math.atan2(travel.z, travel.x);
-                    // pitch > 0 means looking UP; if travel.y > 0 seal is above → positive pitch
-                    camera.pitch = (float)Math.atan2(travel.y, hDist);
-                    camera.clampPitch();
+                // Look toward the nearest remaining seal that is NOT the target AND NOT at the origin
+                float bestDist = Float.MAX_VALUE;
+                Vector3f bestPos = null;
+                for (SealEntry s : placedSeals) {
+                    if (s == target) continue; // skip the seal we landed on
+                    // skip the seal (if any) near the origin we just teleported from
+                    if (new Vector3f(s.position).sub(origin).lengthSquared() < 4.0f) continue;
+
+                    float d = new Vector3f(s.position).sub(target.position).lengthSquared();
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestPos  = s.position;
+                    }
+                }
+                if (bestPos != null) {
+                    Vector3f toNext = new Vector3f(bestPos).sub(target.position);
+                    float hDist = (float)Math.sqrt(toNext.x * toNext.x + toNext.z * toNext.z);
+                    if (hDist > 0.01f) {
+                        camera.yaw   = (float)Math.atan2(toNext.z, toNext.x);
+                        camera.pitch = (float)Math.atan2(toNext.y, hDist);
+                        camera.clampPitch();
+                    }
                 }
                 break;
             }

@@ -104,4 +104,12 @@ public class Enemy {
     public Vector3f getCentre() {
         return new Vector3f(position.x, position.y + HALF_HEIGHT, position.z);
     }
+
+    /** Returns true if a 3D point lies within this enemy's physical collision cylinder. */
+    public boolean isPointInside(Vector3f p) {
+        if (p.y < position.y || p.y > position.y + 2.0f * HALF_HEIGHT) return false;
+        float dx = p.x - position.x;
+        float dz = p.z - position.z;
+        return (dx * dx + dz * dz) <= RADIUS * RADIUS;
+    }
 }

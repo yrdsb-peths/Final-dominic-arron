@@ -301,20 +301,7 @@ public class StandController {
     // ─────────────────────────────────────────────────────────────────────────
 
     private void tickStandShoot(long window, World world, float dt) {
-        boolean lmbHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (lmbHeld && !lastLMB) {
-            if (losOwnerToStand && losStandToTarget) {
-                // Both LOS clear — fire the redirect bolt
-                Vector3f dir      = standCamera.getLookDirection();
-                Vector3f startPos = new Vector3f(standPos).add(new Vector3f(dir).mul(1.2f));
-                Vector3f vel      = new Vector3f(dir).mul(GameConfig.standShotSpeed);
-                activeBolts.add(new StandBolt(startPos, vel));
-            } else {
-                // LOS blocked — flash HUD warning
-                blockedFlashTimer = GameConfig.standBlockedFlashTime;
-            }
-        }
-        lastLMB = lmbHeld;
+        //EMPTY - NO HITTING BY LEFT CLICKING, ONLY HOLDING C
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -400,6 +387,20 @@ public class StandController {
 
             for (int s = 0; s < substeps && !hit; s++) {
                 bolt.pos.add(new Vector3f(bolt.vel).mul(subDt));
+
+                // Check enemy collision first so we hit them directly
+                if (enemyManager != null) {
+                    for (Enemy enemy : enemyManager.getEnemies()) {
+                        if (enemy.alive && new Vector3f(bolt.pos).distance(enemy.getCentre()) < 1.8f) {
+                            boltImpact(bolt, world, (int)Math.floor(bolt.pos.x), (int)Math.floor(bolt.pos.y), (int)Math.floor(bolt.pos.z));
+                            bolt.alive = false;
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                if (hit) break;
+
                 int bx = (int)Math.floor(bolt.pos.x);
                 int by = (int)Math.floor(bolt.pos.y);
                 int bz = (int)Math.floor(bolt.pos.z);

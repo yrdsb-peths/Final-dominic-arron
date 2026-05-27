@@ -144,8 +144,9 @@ public class Player {
         // Must run before abilities so that drone-perspective takes priority.
         // Returns true when the player is piloting the drone — body is frozen.
         if (stand.tick(window, camera, world, deltaTime)) {
-            // Body is frozen; Window will use stand.standCamera this frame.
-            return;
+            // Let the attack controller run while piloting the drone so 'C' works!
+            attacks.tick(window, stand.standCamera, world, deltaTime);
+            return;   // caller must skip physics
         }
 
         // ── ABILITY TICK ───────────────────────────────────────────────────────
