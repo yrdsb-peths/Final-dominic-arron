@@ -164,7 +164,8 @@ public class AttackController {
         tickBolts(world, dt);
         tickMelee(window, camera, world, dt);
         tickRanged(window, camera, world, dt);
-        tickKnifeCombo(window, camera, dt);
+        // knife combo disabled — code kept, re-enable when model is ready
+        // tickKnifeCombo(window, camera, dt);
 
         // Smooth pitch toward target
         float pitchLerp = (meleePhase == MeleePhase.IDLE && !isCharging) ? 10f : 20f;

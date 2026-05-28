@@ -302,11 +302,13 @@ public class GameConfig {
 
     // ── KAMUI (Z toggle) ─────────────────────────────────────────────────────
     /** Seconds the player can stay phased before being forced out. */
-    public static float kamuiMaxDuration    = 60.0f;
+    public static float kamuiMaxDuration      = 60.0f;
     /** Cooldown after exiting Kamui (whether voluntary or by timer). */
-    public static float kamuiCooldown       = 14.0f;
+    public static float kamuiCooldown         = 14.0f;
     /** Seconds to hold look at a target to absorb it into the Kamui dimension. */
-    public static float kamuiAbsorptionTime = 2.0f;
+    public static float kamuiAbsorptionTime   = 2.0f;
+    /** How long the player stays exposed (vulnerable, Kamui off) after attacking. */
+    public static float kamuiExposureDuration = 1.5f;
 
     // ── LIGHTNING (U key) ────────────────────────────────────────────────────
     /** Seconds to reach full charge. */
@@ -342,7 +344,7 @@ public class GameConfig {
     public static float zombieHealth         = 80f;
     public static float zombieSpeed          = 2.2f;
     /** Damage per second dealt while in contact with the player. */
-    public static float zombieDamagePerSec   = 12f;
+    public static float zombieDamagePerSec   = 5f;   // ~7 dmg per bite — hurts but survivable
     public static float zombieAggroRange     = 30f;
     public static float zombieAttackRange    = 1.8f;
     public static float zombieAttackInterval = 1.4f;
@@ -351,14 +353,14 @@ public class GameConfig {
     public static float golemHealth          = 420f;
     public static float golemSpeed           = 1.6f;
     /** Melee contact damage per second (close-in body slam). */
-    public static float golemDamagePerSec    = 20f;
+    public static float golemDamagePerSec    = 6f;   // 6×1.8 = ~11 dmg per hit
     public static float golemAggroRange      = 45f;
     public static float golemAttackRange     = 2.8f;
     public static float golemAttackInterval  = 1.8f;
     /** Radius of the shockwave slam attack. */
     public static float golemSlamRadius      = 5.0f;
     /** Damage dealt by the shockwave slam. */
-    public static float golemSlamDamage      = 55f;
+    public static float golemSlamDamage      = 22f;  // still scary but not one-shot
     /** Cooldown between slam uses. */
     public static float golemSlamCooldown    = 5.0f;
     /** Distance at which the golem triggers a slam. */
@@ -366,7 +368,7 @@ public class GameConfig {
     /** Distance at which the golem tries to throw a boulder. */
     public static float golemThrowRange      = 18.0f;
     public static float golemThrowCooldown   = 7.0f;
-    public static float golemThrowDamage     = 40f;
+    public static float golemThrowDamage     = 14f;
     /** Horizontal launch speed of boulder projectiles (blocks/s). */
     public static float golemThrowSpeed      = 18f;
     /** Fraction of smash-splash damage golems absorb (1.0 = full, 0.5 = half). */
@@ -375,12 +377,12 @@ public class GameConfig {
     // ── ENEMY: THROWER ───────────────────────────────────────────────────────
     public static float throwerHealth         = 95f;
     public static float throwerSpeed          = 4.8f;
-    public static float throwerDamagePerSec   = 4f;   // weak melee if cornered
+    public static float throwerDamagePerSec   = 3f;   // weak melee if cornered
     public static float throwerAggroRange     = 40f;
     public static float throwerAttackRange    = 2.0f;
     public static float throwerAttackInterval = 2.5f;
     public static float throwerThrowCooldown  = 4.5f;
-    public static float throwerThrowDamage    = 30f;
+    public static float throwerThrowDamage    = 10f;
     public static float throwerThrowSpeed     = 22f;
     /** Thrower tries to maintain this distance from the player. */
     public static float throwerPreferredDist  = 12.0f;
@@ -505,40 +507,4 @@ public class GameConfig {
     /** Mana cost per 3-hit knife combo (zero = free, feels snappy). */
     public static float manaKnife            = 0f;
 
-    // ── 魔刀千刃 — Mo Dao Qian Ren  (' key) ──────────────────────────────────
-    // Demon Blade Thousand Shards.  Tap ' to disperse the blade into a
-    // floating formation of shards ahead of you.  LMB while dispersed =
-    // Converge (all shards lance the target simultaneously).  RMB while
-    // dispersed = Sweep (shards fan into a horizontal scythe arc).
-    // Tap ' again to recall the shards early.
-    /** Number of individual blade shards. */
-    public static int   moDaoShardCount      = 16;
-    /** Mana drained per second while shards are dispersed. */
-    public static float moDaoDrainPerSec     = 7f;
-    /** Time (s) for shards to fly out and reach formation. */
-    public static float moDaoDisperseTime    = 0.32f;
-    /** Time (s) for shards to fly back to player. */
-    public static float moDaoRecallTime      = 0.28f;
-    /** Max range for converge target raycast (blocks). */
-    public static float moDaoConvergeRange   = 60f;
-    /** Speed shards travel during converge (blocks/sec). */
-    public static float moDaoConvergeSpeed   = 70f;
-    /** Total damage applied at converge impact (sphere explosion). */
-    public static float moDaoConvergeDamage  = 200f;
-    /** Crater radius created at converge impact point (blocks). */
-    public static int   moDaoConvergeRadius  = 4;
-    /** Mana cost to fire a converge. */
-    public static float maDaoConvergeCost    = 28f;
-    /** How far the sweep travels (blocks). */
-    public static float moDaoSweepDist       = 9f;
-    /** Speed of shards during a sweep (blocks/sec). */
-    public static float moDaoSweepSpeed      = 32f;
-    /** Damage per shard per enemy contact during sweep. */
-    public static float moDaoSweepShardDmg   = 9f;
-    /** Mana cost to sweep. */
-    public static float moDaoSweepCost       = 18f;
-    /** Cooldown after recalling shards (seconds). */
-    public static float moDaoCooldown        = 3.0f;
-    /** Formation distance ahead of the player (blocks). */
-    public static float moDaoFormDist        = 3.0f;
 }

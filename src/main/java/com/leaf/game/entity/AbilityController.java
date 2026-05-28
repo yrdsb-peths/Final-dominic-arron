@@ -91,10 +91,8 @@ public class AbilityController {
     // ── KAMUI (Z toggle) — phase into a separate dimension ───────────────────
     /** True while the player is phased (invincible). */
     public  boolean isKamui        = false;
-    /** Seconds remaining in the current kamui phase. */
+    /** Seconds remaining in the current kamui phase (tracks mana budget). */
     public  float   kamuiTimer     = 0f;
-    /** Cooldown after exiting kamui. */
-    private float   kamuiCooldown  = 0f;
     private boolean lastZ          = false;
     /**
      * True when Kamui was temporarily auto-exited so the player can attack.
@@ -155,16 +153,10 @@ public class AbilityController {
     public float getDashCooldownFrac()   { return dashCooldown   <= 0 ? 1f : 1f - dashCooldown   / GameConfig.dashCooldown; }
     public float getCannonCooldownFrac() { return cannonCooldown <= 0 ? 1f : 1f - cannonCooldown / GameConfig.cannonCooldown; }
     public float getRewindCooldownFrac() { return 1f; } // rewind key-binding removed; always ready
-    public float getKamuiCooldownFrac()  { return kamuiCooldown <= 0 ? 1f : 1f - kamuiCooldown / GameConfig.kamuiCooldown; }
+    public float getKamuiCooldownFrac()  { return 1f; } // no cooldown — mana is the only gate
     public float getBlinkCooldownFrac()  { return blinkCooldown  <= 0 ? 1f : 1f - blinkCooldown  / GameConfig.blinkCooldown; }
     public float getPillarCooldownFrac() { return pillarCooldownTimer <= 0 ? 1f : 1f - pillarCooldownTimer / GameConfig.pillarCooldown; }
     public float getHealCooldownFrac()   { return healCooldownTimer  <= 0 ? 1f : 1f - healCooldownTimer  / GameConfig.healCooldown;  }
-    /** Called by Window when Kamui is force-exited due to mana exhaustion. */
-    public void forceKamuiCooldown(float secs) {
-        kamuiCooldown = secs;
-        kamuiTimer    = 0f;
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     //  Main tick — call from Player.update() every frame, before physics block
     // ─────────────────────────────────────────────────────────────────────────
@@ -373,54 +365,54 @@ public class AbilityController {
 
         // ── KAMUI (Z toggle) — phase into a separate dimension ───────────────
         boolean zHeld       = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
-        // Attack keys — pressing either briefly exits Kamui, then re-enters
+        // Attack / action keys — pressing any of these exits Kamui temporarily.
+        // The player is vulnerable (exposed) for kamuiExposureDuration after releasing.
         boolean attackHeld  = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS
-                           || glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS;
-        if (kamuiCooldown > 0f) kamuiCooldown -= dt;
-
+                           || glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS
+                           || glfwGetKey(window, GLFW_KEY_U) == GLFW_PRESS
+                           || glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS
+                           || glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS;
         if (zHeld && !lastZ) {
-            if (!isKamui && !kamuiAutoExited && kamuiCooldown <= 0f && !isAnyAbilityActive()
+            if (!isKamui && !kamuiAutoExited && !isAnyAbilityActive()
                     && player.mana >= 10f) {    // need at least 10 mana to enter Kamui
                 isKamui          = true;
                 kamuiTimer       = GameConfig.kamuiMaxDuration;
                 kamuiAutoExited  = false;
             } else if (isKamui || kamuiAutoExited) {
-                // Voluntary full exit — cancel any pending re-enter
+                // Voluntary full exit
                 isKamui          = false;
                 kamuiAutoExited  = false;
                 kamuiResumeTimer = 0f;
-                kamuiCooldown    = GameConfig.kamuiCooldown;
                 kamuiTimer       = 0f;
             }
         }
 
-        // Auto-exit when the player presses an attack key while in Kamui
+        // Auto-exit when the player uses an attack or action while in Kamui.
+        // They are exposed (vulnerable, no invincibility) for kamuiExposureDuration.
         if (isKamui && attackHeld) {
             isKamui          = false;
             kamuiAutoExited  = true;
-            kamuiResumeTimer = 0.7f; // stay out at least this long after releasing attack
+            kamuiResumeTimer = GameConfig.kamuiExposureDuration;
         }
 
-        // Auto re-enter after attack is done and brief cooldown elapsed
+        // Auto re-enter after the exposure window closes (if mana remains)
         if (kamuiAutoExited && !isKamui) {
-            if (!attackHeld) kamuiResumeTimer -= dt; // only count down when not attacking
+            if (!attackHeld) kamuiResumeTimer -= dt;
             if (kamuiResumeTimer <= 0f && !attackHeld && kamuiTimer > 0f) {
                 isKamui         = true;
                 kamuiAutoExited = false;
             } else if (kamuiTimer <= 0f) {
-                // Timer expired during the attack gap — full exit
+                // Mana ran out during the exposure gap — full exit, no cooldown
                 kamuiAutoExited  = false;
-                kamuiCooldown    = GameConfig.kamuiCooldown;
             }
         }
 
         if (isKamui) {
             kamuiTimer -= dt;
             if (kamuiTimer <= 0f) {
-                isKamui       = false;
+                isKamui         = false;
                 kamuiAutoExited = false;
-                kamuiCooldown = GameConfig.kamuiCooldown;
-                kamuiTimer    = 0f;
+                kamuiTimer      = 0f;
             }
             // No blendOverlay here — the FBO distort shader is the sole source of
             // all Kamui visual effects (pulsing vignette + purple tint).

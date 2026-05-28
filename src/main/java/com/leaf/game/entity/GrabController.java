@@ -8,19 +8,11 @@ import org.joml.Vector3f;
 import static org.lwjgl.glfw.GLFW.*;
 
 /**
- * GrabController — brutal close-range grab abilities (O key).
+ * GrabController — O key: grab nearest crosshair enemy → lift overhead → slam into ground.
  *
- *   Normal tap O   → Wall Throw: enemy is flung in the camera's look direction
- *                    at high speed.  Hits any solid surface → crater + damage.
- *
- *   Shift + O      → Ground Slam: enemy is rapidly lifted ~3 blocks then
- *                    released straight downward.  Floor impact → crater + damage.
- *
- * Grab only works in survival mode and costs mana (GameConfig.manaGrab).
- * The grabbed enemy is stored as isGrabbed=true (frozen) during the lift phase,
- * then switched to isThrown=true for ballistic flight.
- * Enemy.tickThrownFlight() handles the physics; it sets pendingGrabImpact
- * which Window reads each frame to spawn the crater + ejecta.
+ * The grabbed enemy is held for grabGroundLiftTime seconds (floats in front,
+ * pulses orange) then released straight down at grabGroundSlamSpeed.
+ * Floor impact → crater + damage + screen shake + orange flash.
  */
 public class GrabController {
 
@@ -64,8 +56,7 @@ public class GrabController {
         if (throwFlash > 0f) throwFlash = Math.max(0f, throwFlash - dt * 4f);
         if (cooldown > 0f) cooldown -= dt;
 
-        boolean oHeld    = glfwGetKey(window, GLFW_KEY_O)          == GLFW_PRESS;
-        boolean shiftHeld = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+        boolean oHeld = glfwGetKey(window, GLFW_KEY_O) == GLFW_PRESS;
 
         switch (phase) {
 
@@ -83,16 +74,10 @@ public class GrabController {
                         player.mana -= GameConfig.manaGrab;
                         grabbed = target;
                         target.isGrabbed = true;
-
-                        if (shiftHeld) {
-                            // ── GROUND SLAM — lift then smash ─────────────────
-                            phase      = Phase.LIFTING;
-                            liftTimer  = GameConfig.grabGroundLiftTime;
-                            liftStartY = target.position.y;
-                        } else {
-                            // ── WALL THROW — immediate launch ─────────────────
-                            releaseThrow(camera);
-                        }
+                        // ── GROUND SLAM — lift then smash (always) ────────────
+                        phase      = Phase.LIFTING;
+                        liftTimer  = GameConfig.grabGroundLiftTime;
+                        liftStartY = target.position.y;
                     }
                 }
             }

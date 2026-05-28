@@ -72,9 +72,6 @@ public class Player {
     // ── GRAB SLAM (O key) ─────────────────────────────────────────────────────
     public final GrabController grab = new GrabController(this);
 
-    // ── MO DAO THOUSAND SHARDS (' key) ───────────────────────────────────────
-    public final MoDaoController moDao = new MoDaoController(this);
-
     // ── GROUND SMASH ─────────────────────────────────────────────────────────
     private boolean isSmashing = false;
     private boolean lastShift  = false;   // edge detector for smash trigger
@@ -198,14 +195,14 @@ public class Player {
         // ── GRAB SLAM TICK (O key) ─────────────────────────────────────────────
         grab.tick(window, camera, world, deltaTime);
 
-        // ── MO DAO TICK (' key) ────────────────────────────────────────────────
-        moDao.tick(window, camera, world, deltaTime);
-
         // ── SEAL TICK (Minato's Seal) ──────────────────────────────────────────
         seals.tick(window, camera, world, deltaTime);
 
         // ── MANA REGENERATION ──────────────────────────────────────────────────
-        mana = Math.min(maxMana, mana + GameConfig.manaRegenRate * deltaTime);
+        // No regen while in Kamui — the alternate dimension has no ambient mana.
+        if (!abilities.isKamui) {
+            mana = Math.min(maxMana, mana + GameConfig.manaRegenRate * deltaTime);
+        }
 
         // ── LIGHTNING TICK ─────────────────────────────────────────────────────
         lightning.tick(window, camera, world, deltaTime, (float) glfwGetTime());
@@ -339,7 +336,7 @@ public class Player {
                 // highestY already set to launch point so fallDist ≤ 0; no damage
             } else {
                 float fallDist = highestY - position.y;
-                if (fallDist > 4.0f) {
+                if (fallDist > 4.0f && !abilities.isKamui) {
                     health -= (fallDist * 0.5f - 2.0f);
                     if (health <= 0f) {
                         System.out.println("You died!");

@@ -331,12 +331,10 @@ public class Window {
                 // While piloting the stand drone OR auto-aiming at an enemy, LMB is
                 // consumed by the stand — block normal block-breaking.
                 // While Kamui is active, LMB drives the absorption system instead.
-                // While Mo Dao is dispersed, LMB triggers Converge.
                 boolean standConsumedLMB = player.stand.isInStandPerspective()
                         || player.stand.autoAimedThisFrame;
                 boolean kamuiConsumedLMB = player != null && player.abilities.isKamui;
-                boolean moDaoConsumedLMB = player != null && player.moDao.isDispersed();
-                if (!standConsumedLMB && !kamuiConsumedLMB && !moDaoConsumedLMB) {
+                if (!standConsumedLMB && !kamuiConsumedLMB) {
                     breakingActive = (action == GLFW_PRESS || action == GLFW_REPEAT);
                     if (action == GLFW_RELEASE) breakProgress = 0.0f;
                 }
@@ -350,9 +348,6 @@ public class Window {
             }
 
             if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS) {
-                // While Mo Dao is dispersed, RMB triggers Sweep instead of placing a block
-                if (player != null && player.moDao.onRmbPress()) return;
-
                 if (lastTarget != null && lastTarget.hit && selectedBlock != Block.AIR) {
                     if (!playerOccupies(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ) &&
                             !remotePlayerOccupies(lastTarget.placeX, lastTarget.placeY, lastTarget.placeZ)) {
@@ -484,7 +479,6 @@ public class Window {
         player.seals.setEnemyManager(enemyManager);      // enables seal-on-enemy attachment
         player.lightning.setEnemyManager(enemyManager); // enables lightning targeting
         player.grab.setEnemyManager(enemyManager);       // enables grab targeting
-        player.moDao.setEnemyManager(enemyManager);      // enables Mo Dao targeting
 
         TimeController tc = TimeController.getInstance();
 
@@ -701,29 +695,6 @@ public class Window {
                             player.grab.shakeRequest = 0f;
                         }
 
-                        // ── MO DAO CONVERGE IMPACT ─────────────────────────────
-                        if (player.moDao.convergeImpacted) {
-                            Vector3f imp = player.moDao.convergeImpactPos;
-                            int mx = (int) Math.floor(imp.x);
-                            int my = (int) Math.floor(imp.y);
-                            int mz = (int) Math.floor(imp.z);
-                            int mr = GameConfig.moDaoConvergeRadius;
-                            world.createImpactCrater(mx, my, mz, mr);
-                            spawnCraterEjecta(mx, my, mz, mr);
-                            enemyManager.processExplosion(
-                                    new float[]{ imp.x, imp.y, imp.z, mr * 1.8f },
-                                    GameConfig.moDaoConvergeDamage);
-                            activeShakeDuration  = 0.70f;
-                            activeShakeAmplitude = 0.30f;
-                            smashShakeTimer      = Math.max(smashShakeTimer, activeShakeDuration);
-                        }
-
-                        // ── MO DAO SHAKE REQUEST ───────────────────────────────
-                        if (player.moDao.shakeRequest > 0f) {
-                            smashShakeTimer = Math.max(smashShakeTimer, player.moDao.shakeRequest);
-                            player.moDao.shakeRequest = 0f;
-                        }
-
                         // ── ENEMY SYSTEM UPDATE ────────────────────────────────
                         // Drain explosion events from attack and stand bolts.
                         for (float[] ev : player.attacks.pendingExplosions) {
@@ -847,14 +818,11 @@ public class Window {
                         if (player.abilities.isKamui) {
                             player.mana = Math.max(0f,
                                     player.mana - GameConfig.manaKamuiDrain * deltaTime);
-                            // Force-exit Kamui when mana is fully exhausted
+                            // Force-exit Kamui when mana is fully exhausted — no cooldown
                             if (player.mana <= 0f) {
-                                player.abilities.isKamui        = false;
-                                player.abilities.kamuiAutoExited = false;
+                                player.abilities.isKamui          = false;
+                                player.abilities.kamuiAutoExited  = false;
                                 player.abilities.absorptionCharge = 0f;
-                                // kamuiCooldown is set inside AbilityController on the next
-                                // Z-toggle — using a shorter "drained-out" cooldown here
-                                player.abilities.forceKamuiCooldown(GameConfig.kamuiCooldown * 0.5f);
                             }
                         }
 
@@ -2169,15 +2137,10 @@ public class Window {
                 // 9. Render Ability Ghost Trails
                 renderAbilityGhosts(shader, projection, view);
 
-                // 10. Mo Dao shards
-                if (player != null && !player.debugMode) {
-                    renderMoDaoShards(shader, projection, view, camera);
-                }
-
-                // 11. Knife view model — always visible in bottom-right of screen
-                if (player != null && !player.debugMode && !player.stand.isInStandPerspective()) {
-                    renderKnifeViewModel(shader, projection, view, camera);
-                }
+                // 10. Knife view model — disabled (re-enable when model is ready)
+                // if (player != null && !player.debugMode && !player.stand.isInStandPerspective()) {
+                //     renderKnifeViewModel(shader, projection, view, camera);
+                // }
 
                 glDisable(GL_BLEND);
                 shader.unbind();
@@ -2361,115 +2324,6 @@ public class Window {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  MO DAO SHARD RENDERING
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Renders the 16 Mo Dao shards.  Visual design by phase:
-     *
-     *   SHEATHED   — small dark blades orbiting the player (always visible, ambient)
-     *   DISPERSING — blades flying outward (scale grows to 0.14)
-     *   DISPERSED  — floating cloud ahead, bright purple-silver glow
-     *   CONVERGING — blades rushing toward a single point, white-hot trail colour
-     *   SWEEPING   — horizontal line of blades scything sideways
-     *   RECALLING  — blades shrinking back to player, dimming
-     *
-     * Each shard is a thin elongated STAR_IRON block with an overlay colour that
-     * changes per phase so the player always knows the blade's state at a glance.
-     */
-    private void renderMoDaoShards(Shader shader, Matrix4f projection, Matrix4f view,
-                                   com.leaf.game.util.Camera camera) {
-        com.leaf.game.entity.MoDaoController moDao = player.moDao;
-        com.leaf.game.entity.MoDaoController.Phase phase = moDao.phase;
-
-        // ── Visual parameters per phase ──────────────────────────────────────
-        float  shardScale;
-        Vector3f color;
-        float  overlayStr;
-        float  alpha;
-        float  time = (float) glfwGetTime();
-
-        switch (phase) {
-            case SHEATHED -> {
-                shardScale  = 0.065f;
-                color       = new Vector3f(0.20f, 0.0f, 0.45f);  // dark purple orbit
-                overlayStr  = 0.45f;
-                alpha       = 0.78f;
-            }
-            case DISPERSING -> {
-                shardScale  = 0.10f;
-                color       = new Vector3f(0.35f, 0.05f, 0.70f); // brightening purple
-                overlayStr  = 0.55f;
-                alpha       = 0.90f;
-            }
-            case DISPERSED -> {
-                // Slow pulse to show "ready"
-                float pulse = 0.5f + 0.5f * (float) Math.sin(time * 3.5f);
-                shardScale  = 0.12f + pulse * 0.02f;
-                color       = new Vector3f(0.55f + pulse * 0.2f, 0.05f, 0.90f);
-                overlayStr  = 0.50f + pulse * 0.20f;
-                alpha       = 0.92f;
-            }
-            case CONVERGING -> {
-                // White-hot: shards flash brighter as they fly toward target
-                float flash = 0.6f + 0.4f * (float) Math.sin(time * 18f);
-                shardScale  = 0.14f;
-                color       = new Vector3f(0.85f + flash * 0.15f, 0.60f * flash, 1.0f);
-                overlayStr  = 0.70f + flash * 0.25f;
-                alpha       = 1.0f;
-            }
-            case SWEEPING -> {
-                float swPulse = 0.5f + 0.5f * (float) Math.sin(time * 22f);
-                shardScale  = 0.13f;
-                color       = new Vector3f(0.90f, 0.80f * swPulse, 1.0f);  // silver-white
-                overlayStr  = 0.80f;
-                alpha       = 1.0f;
-            }
-            case RECALLING -> {
-                shardScale  = 0.08f;
-                color       = new Vector3f(0.25f, 0.0f, 0.50f);
-                overlayStr  = 0.30f;
-                alpha       = 0.60f;
-            }
-            default -> {
-                shardScale  = 0.07f;
-                color       = new Vector3f(0.2f, 0f, 0.4f);
-                overlayStr  = 0.35f;
-                alpha       = 0.70f;
-            }
-        }
-
-        // ── Render each shard ─────────────────────────────────────────────────
-        glDepthMask(false);
-        shader.setUniform("overlayVignetteStrength", overlayStr);
-        shader.setUniform("overlayVignetteColor", color);
-        shader.setUniform("alphaMultiplier", alpha);
-
-        float yaw = camera.yaw;  // orient blades to face camera
-
-        for (com.leaf.game.entity.MoDaoController.Shard s : moDao.shards) {
-            // Each shard spins slightly around its own phase for visual interest
-            float spinY = -yaw + s.phase * 0.3f + time * 0.8f;
-            float tilt  = (float) Math.sin(s.phase + time * 1.2f) * 0.4f;  // gentle tilt
-
-            Matrix4f mat = new Matrix4f()
-                    .translate(s.pos.x, s.pos.y, s.pos.z)
-                    .rotateY(spinY)
-                    .rotateZ(tilt)
-                    // Each shard is a thin vertical blade
-                    .scale(shardScale * 0.35f, shardScale * 2.4f, shardScale * 0.15f);
-
-            shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(mat));
-            getItemMesh(Block.STAR_IRON).render();
-        }
-
-        glDepthMask(true);
-        shader.setUniform("overlayVignetteStrength", 0f);
-        shader.setUniform("overlayVignetteColor", new Vector3f(0f, 0f, 0f));
-        shader.setUniform("alphaMultiplier", 1.0f);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     //  KNIFE VIEW MODEL
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -2483,6 +2337,9 @@ public class Window {
      */
     private void renderKnifeViewModel(Shader shader, Matrix4f projection, Matrix4f view,
                                       com.leaf.game.util.Camera camera) {
+        // Only visible while actively swinging — not a permanent view model
+        if (player.attacks.knifeSwingPhase < 0.05f) return;
+
         // ── Camera basis vectors ───────────────────────────────────────────────
         Vector3f look  = camera.getLookDirection();
         Vector3f right = camera.getRight();

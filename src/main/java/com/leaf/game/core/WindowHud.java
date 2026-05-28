@@ -1161,14 +1161,14 @@ class WindowHud {
         int   black    = ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.8f);
         int   grey     = ImGui.colorConvertFloat4ToU32(0.2f, 0.2f, 0.2f, 0.8f);
 
-        // Row 1 — Q / E / F / G / Z / K / J / M / I / U / O / ; / '
+        // Row 1 — Q / E / F / G / Z / K / J / M / I / U / O
         {
-            float totalW = 13 * iconSize + 12 * spacing;
+            float totalW = 11 * iconSize + 10 * spacing;
             float startX = screenW - totalW - 14f;
             float startY = screenH - iconSize * 2f - spacing - 14f;
 
-            String[] labels   = { "Q",    "E",     "F",     "G",      "Z",      "K",      "J",    "M",        "I",     "U",         "O",    ";",    "'"   };
-            String[] tooltips = { "Dash","Blink","Slash","Cannon","Kamui","Pillar","Swap","Quagmire","Stone","Lightning","Grab","Knife","MoDao" };
+            String[] labels   = { "Q",    "E",     "F",     "G",      "Z",      "K",      "J",    "M",        "I",     "U",         "O"  };
+            String[] tooltips = { "Dash","Blink","Slash","Cannon","Kamui","Pillar","Swap","Quagmire","Stone","Lightning","Grab" };
             float todoFrac = (GameConfig.todoCooldown > 0f)
                     ? Math.max(0f, Math.min(1f, win.todoSwapCooldown / GameConfig.todoCooldown))
                     : 0f;
@@ -1184,13 +1184,9 @@ class WindowHud {
                     ? win.player.lightning.getChargeFrac()
                     : win.player.lightning.getCooldownFrac();
             float kamuiFrac = win.player.abilities.isKamui
-                    ? win.player.abilities.kamuiTimer / GameConfig.kamuiMaxDuration  // drain while active
+                    ? win.player.abilities.kamuiTimer / GameConfig.kamuiMaxDuration
                     : win.player.abilities.getKamuiCooldownFrac();
             float grabFrac  = win.player.grab.getCooldownFrac();
-            float knifeFrac = win.player.attacks.knifeSwingPhase > 0f ? 1f : 1f;  // always full (no long CD)
-            float moDaoFrac = win.player.moDao.isActive()
-                    ? 1f                                    // always full while active
-                    : win.player.moDao.getCooldownFrac();   // cooldown fill
             float[]  fracs = {
                     win.player.abilities.getDashCooldownFrac(),
                     win.player.abilities.getBlinkCooldownFrac(),
@@ -1202,29 +1198,16 @@ class WindowHud {
                     quagFrac,
                     stoneFrac,
                     lightningFrac,
-                    grabFrac,
-                    knifeFrac,
-                    moDaoFrac
+                    grabFrac
             };
-            // Stone canon color pulses orange while charging; lightning pulses white while charging
             float stoneR = win.isChargingStoneCanon
                     ? 0.85f + (float)Math.sin(glfwGetTime() * 6) * 0.15f : 0.65f;
             float lightningA = win.player.lightning.isCharging()
                     ? 0.6f + (float)Math.sin(glfwGetTime() * 12) * 0.4f : 1.0f;
-            // Kamui pulses purple when active
             float kamuiR = win.player.abilities.isKamui
                     ? 0.55f + (float)Math.sin(glfwGetTime() * 8) * 0.2f : 0.45f;
-            // Grab pulses red when active
             float grabA = win.player.grab.isActive()
                     ? 0.6f + (float)Math.sin(glfwGetTime() * 12) * 0.4f : 1.0f;
-            // Knife flashes silver on swing
-            float knifeA = win.player.attacks.knifeSwingPhase > 0f
-                    ? 0.6f + win.player.attacks.knifeSwingPhase * 0.4f : 0.7f;
-            // Mo Dao pulses purple when dispersed/converging
-            float moDaoR = win.player.moDao.isDispersed()
-                    ? 0.55f + (float)Math.sin(glfwGetTime() * 7) * 0.25f : 0.40f;
-            float moDaoG = win.player.moDao.phase == com.leaf.game.entity.MoDaoController.Phase.CONVERGING
-                    ? 0.8f : 0.0f;
             int[] colors = {
                     ImGui.colorConvertFloat4ToU32(0.45f, 0.88f, 1.0f, 1.0f),       // Q dash: cyan
                     ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1.0f, 1.0f),       // E blink: white
@@ -1236,9 +1219,7 @@ class WindowHud {
                     ImGui.colorConvertFloat4ToU32(0.55f, 0.82f, 0.20f, 1.0f),      // M quagmire: muddy green
                     ImGui.colorConvertFloat4ToU32(stoneR, 0.60f, 0.30f, 1.0f),     // I stone: orange-grey
                     ImGui.colorConvertFloat4ToU32(0.85f, 0.92f, 1.0f,  lightningA),// U lightning: ice-blue
-                    ImGui.colorConvertFloat4ToU32(1.0f,  0.20f, 0.15f, grabA),     // O grab: red
-                    ImGui.colorConvertFloat4ToU32(0.85f, 0.88f, 0.92f, knifeA),    // ; knife: silver
-                    ImGui.colorConvertFloat4ToU32(moDaoR, moDaoG, 1.0f,  1.0f)     // ' Mo Dao: purple→white
+                    ImGui.colorConvertFloat4ToU32(1.0f,  0.20f, 0.15f, grabA)      // O grab: red
             };
 
             for (int i = 0; i < labels.length; i++) {
@@ -1330,8 +1311,8 @@ class WindowHud {
     // ─────────────────────────────────────────────────────────────────────────
 
     void renderHelpScreen(float screenW, float screenH) {
-        float winW = Math.min(680f, screenW - 40f);
-        float winH = Math.min(680f, screenH - 40f);
+        float winW = Math.min(720f, screenW - 40f);
+        float winH = Math.min(screenH - 40f, screenH - 40f);
         ImGui.setNextWindowPos(screenW / 2f - winW / 2f, screenH / 2f - winH / 2f);
         ImGui.setNextWindowSize(winW, winH);
         ImGui.setNextWindowBgAlpha(0.94f);
@@ -1339,83 +1320,111 @@ class WindowHud {
                 imgui.flag.ImGuiWindowFlags.NoResize |
                 imgui.flag.ImGuiWindowFlags.NoMove);
 
-        ImGui.textDisabled("  [F1] or [ESC] to close.");
+        ImGui.textDisabled("  [F1] or [ESC] to close.   Scroll down for all sections.");
         ImGui.separator();
         ImGui.spacing();
 
         // ── MOVEMENT ──────────────────────────────────────────────────────────
         ImGui.textColored(0.5f, 0.9f, 1.0f, 1.0f, "MOVEMENT");
         ImGui.separator();
-        helpRow("WASD",              "Move around.");
-        helpRow("Space",             "Jump.");
-        helpRow("Shift",             "Sprint.");
-        helpRow("Fall + Shift land", "Ground Smash — craters the terrain and hurts all enemies nearby. The higher you fall from, the bigger the crater.");
+        helpRow("WASD",                 "Move. Double-tap W to sprint.");
+        helpRow("Space",                "Jump. Double-tap Space to toggle flight mode.");
+        helpRow("Shift (in air)",       "While falling from height: slam into the ground. Craters the terrain and damages nearby enemies. Bigger fall = bigger crater.");
         ImGui.spacing();
 
-        // ── COMBAT ABILITIES ──────────────────────────────────────────────────
-        ImGui.textColored(1.0f, 0.55f, 0.1f, 1.0f, "COMBAT ABILITIES");
+        // ── FLIGHT ────────────────────────────────────────────────────────────
+        ImGui.textColored(0.4f, 0.75f, 1.0f, 1.0f, "FLIGHT  (double-tap Space to enter / exit)");
         ImGui.separator();
-        helpRow("[Q]   Dash",     "Instant burst in the direction you're moving. Short cooldown. Leaves a fading ghost trail behind you.");
-        helpRow("[E]   Blink",    "Teleport to where you're looking (up to ~22 blocks away). Short cooldown.");
-        helpRow("[F]   Slash",    "Wide swing that hits every enemy in a cone in front of you.");
-        helpRow("[K]   Pillar",   "A stone spire shoots up beneath you and launches you into the air.");
-        helpRow("[C]   Snipe",    "Hold [C] to charge up a crystal bolt, release to fire. Longer charge = bigger explosion on hit.");
-        helpRow("[G]   Cannonball","Hold [G] to charge, release to launch yourself like a cannonball. Explodes on impact. Dotted arc shows your trajectory while charging.");
+        helpRow("[V]  Cycle mode",      "Switch between SKIM → SOAR → GRAPPLE flight modes.");
+        helpRow("SKIM",                 "Glide forward with gravity. Pitch your camera to angle up or down. Good for fast horizontal travel.");
+        helpRow("SOAR",                 "Full 3D free-flight. WASD moves relative to your look direction. Space = up, Shift = down. No gravity.");
+        helpRow("GRAPPLE",              "Swing on a grapple line attached to the block you're looking at.");
+        ImGui.spacing();
+
+        // ── COMBAT ────────────────────────────────────────────────────────────
+        ImGui.textColored(1.0f, 0.35f, 0.2f, 1.0f, "COMBAT");
+        ImGui.separator();
+        helpRow("[F]  Slash",           "Wide melee swing. Hits every enemy in a cone in front of you.");
+        helpRow("[C]  Snipe",           "Hold to charge a crystal bolt, release to fire. Longer charge = bigger explosion on impact.");
+        helpRow("[G]  Cannonball",      "Hold to charge, release to launch yourself as a cannonball. Explodes on landing. A dotted arc previews your trajectory while charging.");
+        helpRow("[U]  Lightning",       "Strike the enemy you're aiming at with a lightning bolt. Double-tap [U] quickly for an area burst that hits all nearby enemies.");
+        helpRow("[O]  Grab & Slam",     "Grab the enemy in your crosshair (up to ~4.5 blocks away), hoist them overhead, then smash them into the ground. Creates a crater. Big damage.");
+        ImGui.spacing();
+
+        // ── MOVEMENT ABILITIES ────────────────────────────────────────────────
+        ImGui.textColored(1.0f, 0.78f, 0.15f, 1.0f, "MOVEMENT ABILITIES");
+        ImGui.separator();
+        helpRow("[Q]  Dash",            "Instant burst in the direction you're moving. Very short cooldown. Leaves a ghost trail behind you.");
+        helpRow("[E]  Blink",           "Teleport to the point you're looking at (up to ~22 blocks). Short cooldown.");
+        helpRow("[K]  Pillar",          "A stone spire erupts beneath your feet and launches you into the air.");
         ImGui.spacing();
 
         // ── SPECIAL ABILITIES ─────────────────────────────────────────────────
-        ImGui.textColored(0.95f, 0.4f, 1.0f, 1.0f, "SPECIAL ABILITIES");
+        ImGui.textColored(0.85f, 0.35f, 1.0f, 1.0f, "SPECIAL ABILITIES");
         ImGui.separator();
-        helpRow("[J]   Position Swap",  "Instantly swap places with the nearest enemy in range. Good for getting out of a bad spot — or dropping them off a cliff.");
-        helpRow("[V]   Substitute",     "Hold [V] to get ready. The next hit you take is completely negated — you teleport backward and a paper dummy is left at your old spot. A second later it explodes, damaging nearby enemies.");
-        helpRow("[M]   Quagmire",       "Shoot a mud wave toward the enemy you're looking at. It travels along the ground and traps them on contact — they can't move for several seconds.");
-        helpRow("[I]   Stone Canon",    "Hold [I] while near stone blocks to charge up. Nearby stone is absorbed into a growing projectile. Release to fire. Bigger charge = more stone consumed = bigger explosion. You can't move while charging.");
-        helpRow("[O]   Grab Throw",     "Grab the nearest enemy in your crosshair (up to ~4.5 blocks). Launches them in the direction you're looking — they crater anything they hit.");
-        helpRow("[Shift+O] Ground Slam","Grab the enemy, lift them dramatically, then smash them straight into the floor. Big crater, massive damage.");
-        helpRow("[;]   Knife Combo",    "Three rapid knife slashes in quick succession. Each slash deals damage to enemies in front of you. Fast, no terrain destruction, no mana cost.");
+        helpRow("[Z]  Kamui",           "Activate a space-time vortex around yourself. Distorts the whole screen. While active: hold LMB to charge an absorption ring that sucks in nearby enemies. Drains mana continuously — ends when mana runs out or you press Z again. Cooldown after use.");
+        helpRow("[J]  Position Swap",   "Instantly teleport-swap with the nearest enemy in range. Great for escaping a bad spot or dropping enemies off cliffs.");
+        helpRow("[V]  Substitute",      "(On foot, not in flight) Hold [V] to prime. The next hit you take is completely absorbed — you blink backward, a paper dummy appears at your old position, then explodes a moment later damaging nearby enemies.");
+        helpRow("[M]  Quagmire",        "Fire a mud wave at the enemy you're aiming at. It travels along the ground and traps them on contact — they cannot move for several seconds.");
+        helpRow("[I]  Stone Canon",     "Stand near stone blocks and hold [I] to charge. Nearby stone is absorbed into a massive projectile (you can't move while charging). Release to fire. The longer you charge, the more stone consumed and the bigger the explosion.");
+        helpRow("[L]  Heal",            "Hold [L] to channel healing energy. Restores health over time while held. You cannot move while channeling.");
         ImGui.spacing();
 
-        // ── MANHATTAN TRANSFER ────────────────────────────────────────────────
+        // ── MANHATTAN TRANSFER (Stand / Drone) ────────────────────────────────
         ImGui.textColored(1.0f, 0.85f, 0.15f, 1.0f, "MANHATTAN TRANSFER  (Stand / Drone)");
         ImGui.separator();
-        helpRow("[X]",                  "Deploy your drone above you. Press [X] again to recall it.");
-        helpRow("[TAB]",                "Swap into the drone's perspective (pilot it). Press [TAB] again to return to your body.");
+        helpRow("[X]",                  "Deploy your drone directly above you. Press [X] again to recall it.");
+        helpRow("[TAB]",                "Enter the drone's perspective to pilot it manually. Press [TAB] again to return to your body.");
         helpRow("Piloting — WASD",      "Fly the drone. Space = up, Shift = down.");
-        helpRow("Piloting — click",     "Fire a shot in the direction the drone is facing.");
-        helpRow("Not piloting — click", "The drone auto-targets and shoots the nearest enemy it can see.");
-        helpRow("Two dots (top right)", "Show whether you and the drone both have a clear shot. Both must be green to fire.");
-        helpRow("Gold diamond",         "Marks your drone on screen. When it's out of view, an arrow points to it from the edge of the screen.");
+        helpRow("Piloting — click",     "Fire a shot in whatever direction the drone is facing.");
+        helpRow("Not piloting — click", "The drone auto-targets and fires at the nearest visible enemy.");
+        helpRow("Two dots (top-right)", "Indicate line-of-sight: yours (left dot) and the drone's (right dot). Both green = clear shot.");
+        helpRow("Gold diamond",         "Shows your drone's position on screen. If it's off-screen, an arrow on the edge points toward it.");
         ImGui.spacing();
 
         // ── MINATO'S SEAL ─────────────────────────────────────────────────────
         ImGui.textColored(0.2f, 0.95f, 0.95f, 1.0f, "MINATO'S SEAL  (Teleport Anchors)");
         ImGui.separator();
-        helpRow("[H]",   "Throw a seal — it sticks to the first surface it hits.");
-        helpRow("[B]",   "Teleport instantly to the seal closest to your crosshair. The targeted seal glows bigger and brighter.");
-        helpRow("[N]",   "Pull the targeted seal back to you without teleporting.");
-        helpRow("Tip",   "You can place up to 5 seals at a time. Great for escape routes, high ground, and repositioning. Arrows on the screen edges point to seals that are out of view.");
+        helpRow("[H]",                  "Throw a seal marker. It sticks to the first surface it touches.");
+        helpRow("[B]",                  "Instantly teleport to the seal nearest your crosshair. The targeted seal glows to indicate the destination.");
+        helpRow("[N]",                  "Pull the targeted seal back to your hand without teleporting.");
+        helpRow("Tip",                  "Up to 5 seals active at once. Use them for escape routes, high-ground setup, and rapid repositioning. Off-screen seals show as arrows on the screen edge.");
+        ImGui.spacing();
+
+        // ── TIME CONTROL ──────────────────────────────────────────────────────
+        ImGui.textColored(0.7f, 1.0f, 0.6f, 1.0f, "TIME DILATION");
+        ImGui.separator();
+        helpRow("[R]  Slow time",       "Everything moves in slow motion (including enemies). Useful for dodging or lining up a shot.");
+        helpRow("[Y]  Fast time",       "Speeds up time — enemies and projectiles move faster. Use carefully.");
         ImGui.spacing();
 
         // ── WORLD & UI ────────────────────────────────────────────────────────
         ImGui.textColored(0.75f, 0.75f, 0.75f, 1.0f, "WORLD & BUILDING");
         ImGui.separator();
-        helpRow("Hold left click",  "Break the block you're looking at.");
-        helpRow("Right click",      "Place the block selected in your win.hotbar.");
-        helpRow("1 – 9",            "Switch win.hotbar slot.");
-        helpRow("[P]",              "Spawn a test enemy where you're looking. Enemies also spawn automatically in waves.");
-        helpRow("[ESC]",            "Pause menu.");
-        helpRow("[F1]",             "This screen.");
-        helpRow("[F3]",             "Debug info (your position, frame rate, render distance).");
+        helpRow("LMB (hold)",           "Break the block you're looking at.");
+        helpRow("RMB",                  "Place the block selected in your hotbar.");
+        helpRow("1 – 9",                "Select hotbar slot.");
+        helpRow("[P]",                  "Spawn a test enemy at your crosshair. Enemies also spawn automatically in waves.");
+        helpRow("[ESC]",                "Open the pause menu.");
+        helpRow("[F1]",                 "This screen.");
+        helpRow("[F3]",                 "Debug overlay (position, FPS, time scale, render distance).");
+        ImGui.spacing();
+
+        // ── MANA & COOLDOWNS ──────────────────────────────────────────────────
+        ImGui.textColored(0.4f, 0.6f, 1.0f, 1.0f, "MANA & RESOURCES");
+        ImGui.separator();
+        helpRow("Mana bar",             "Blue bar below your health. Most abilities cost mana. Regenerates slowly over time.");
+        helpRow("Cooldown icons",       "The ability bar at the bottom shows each ability's cooldown as a filling overlay. Grayed-out = on cooldown or not enough mana.");
         ImGui.spacing();
 
         // ── ENEMY TYPES ───────────────────────────────────────────────────────
         ImGui.textColored(0.9f, 0.3f, 0.1f, 1.0f, "ENEMIES");
         ImGui.separator();
-        helpRow("Red-orange",   "Grunt — standard enemy. Medium speed and health.");
-        helpRow("Yellow-green", "Stalker — very fast but fragile. Has a long detection range so it will spot you first.");
-        helpRow("Purple",       "Brute — slow but very tanky and hits hard up close.");
-        helpRow("Waves",        "Enemies keep spawning in waves. The wave counter is in the top-left corner.");
-        helpRow("Health bars",  "Float above each enemy. Green = healthy, red = almost dead.");
+        helpRow("Green tint",           "ZOMBIE — slow melee chaser. Closes in and bites. Low damage per hit but relentless. Appears in large numbers early on.");
+        helpRow("Bone-white",           "THROWER — skeleton archer. Keeps its distance and pelts you with projectiles. Kill it before it repositions.");
+        helpRow("Blue-grey (large)",    "GOLEM — heavily armored tank. Slow but extremely tanky. Slams the ground for AoE damage and throws boulders. Appears from wave 3.");
+        helpRow("Health bars",          "Float above every enemy. Green = healthy, yellow = damaged, red = near death.");
+        helpRow("Waves",                "Enemies spawn in escalating waves. The wave number shows in the top-left. Later waves bring more Golems.");
 
         ImGui.end();
     }
