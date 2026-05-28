@@ -177,6 +177,7 @@ public class GameConfig {
     public static float meleeRecoilDuration  = 0.22f;  // seconds
     public static float meleeCooldown        = 0.80f;  // seconds between strikes
     public static float meleeShakeStrength   = 0.13f;  // shake timer length (s)
+    public static float meleeDamage          = 35f;    // HP per hit (cone arc)
     public static boolean melee3DAiming = true;
 
     // ── RANGED ATTACK (Void Shard — C key) ───────────────────────────────────
@@ -188,6 +189,8 @@ public class GameConfig {
     public static float voidShardLifetime     = 4.0f;   // seconds before despawn
     public static float voidShardMinRadius    = 1.5f;   // explosion radius (blocks) at 0 charge
     public static float voidShardMaxRadius    = 3.2f;   // explosion radius at full charge
+    public static float voidShardMinDamage    = 25f;    // HP at zero charge
+    public static float voidShardMaxDamage    = 80f;    // HP at full charge
     public static float voidShardCooldown     = 1.6f;   // seconds
     public static float voidShardShakeStrength = 0.18f; // base shake factor (scaled by chargeF)
     // ── SNIPING UPDATE ────────────────────────────────────────────────────────
@@ -457,7 +460,7 @@ public class GameConfig {
     // Mana is a shared resource that limits how often abilities can be used.
     // All values are tunable; regeneration is passive and always active.
     /** Mana regenerated per second (passive). */
-    public static float manaRegenRate        = 5f;
+    public static float manaRegenRate        = 3f;
 
     // Lightning costs
     /** Mana cost for a zero-charge single lightning strike. */

@@ -591,7 +591,10 @@ public class AttackController {
         }
 
         // Emit explosion damage event — drained by Window into EnemyManager.
-        pendingExplosions.add(new float[] { cx, cy, cz, radius });
+        // Damage scales linearly with charge: min at 0, max at full charge.
+        float damage = GameConfig.voidShardMinDamage
+                + bolt.chargeF * (GameConfig.voidShardMaxDamage - GameConfig.voidShardMinDamage);
+        pendingExplosions.add(new float[] { cx, cy, cz, radius, damage });
 
         // Scale shake with charge
         shakeRequest = Math.max(shakeRequest,

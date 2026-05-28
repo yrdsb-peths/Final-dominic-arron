@@ -47,8 +47,7 @@ import java.util.Random;
 public class EnemyManager {
 
     // ── Damage constants ──────────────────────────────────────────────────────
-    public static final float EXPLOSION_DAMAGE = 10f;
-    public static final float MELEE_DAMAGE     = 5f;
+    public static final float EXPLOSION_DAMAGE = 10f; // default for non-player explosions
     /** Half-angle (radians) of the melee cleave arc — ~60° each side. */
     public static final float ARC_HALF_ANGLE   = (float) Math.toRadians(60.0);
 
@@ -319,11 +318,12 @@ public class EnemyManager {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Process a sphere explosion using the default EXPLOSION_DAMAGE.
-     * @param event float[4] — { cx, cy, cz, radius }
+     * Process a sphere explosion.
+     * @param event float[4] — { cx, cy, cz, radius }  OR  float[5] — { cx, cy, cz, radius, damage }
      */
     public void processExplosion(float[] event) {
-        processExplosion(event, EXPLOSION_DAMAGE);
+        float damage = (event.length >= 5) ? event[4] : EXPLOSION_DAMAGE;
+        processExplosion(event, damage);
     }
 
     /**
@@ -366,7 +366,7 @@ public class EnemyManager {
             if (dist > range || dist < 0.001f) continue;
             float dot = (ex/dist)*ndx + (ey/dist)*ndy + (ez/dist)*ndz;
             if (dot >= cosHalf) {
-                e.applyDamage(MELEE_DAMAGE);
+                e.applyDamage(GameConfig.meleeDamage);
             }
         }
     }
