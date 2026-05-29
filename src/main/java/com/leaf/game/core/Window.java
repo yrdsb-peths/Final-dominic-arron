@@ -49,6 +49,9 @@ public class Window {
     World world;
     WorldGen worldGen;
 
+    private int portalFboW = 0;
+    private int portalFboH = 0;
+
     // ── SPAWN POINT ───────────────────────────────────────────────────────────
     // Fixed world-spawn XZ. Y is determined by scanning for the surface at load.
     private static final float SPAWN_X = 777.0f;
@@ -220,6 +223,76 @@ public class Window {
     private boolean wasCharging      = false;   // edge-detect for preload trigger
     float   pathReadiness    = 0f;      // 0..1 shown in HUD during charging
     private boolean clientSpawnedAtHost = false;
+
+    // ── PHYSICAL FRAMEBUFFER SIZE ─────────────────────────────────────────────
+    // Tracked as instance fields so portal/kamui FBO code can read them without
+    // needing them passed as parameters.  Updated once per frame via
+    // glfwGetFramebufferSize inside loop().  On Retina/HiDPI displays these are
+    // 2× the logical window size — the portal viewportSize uniform MUST use
+    // these values, not the hardcoded PORTAL_FBO_W/H, to avoid UV tiling.
+    private final int[] fw = {1280};
+    private final int[] fh = {720};
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  NON-EUCLIDEAN GEOMETRY — PORTAL FBO INFRASTRUCTURE
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Up to 4 FBO slots shared between all non-Euclidean rooms.
+    // Slot 0: BOTI entry portal   Slot 1: BOTI exit portal
+    // Slot 2: RR portal A→B      Slot 3: RR portal B→A
+    private int[] portalFbo      = null;
+    private int[] portalColorTex = null;
+    private int[] portalDepthRbo = null;
+    private static final int PORTAL_FBO_W = 1280;
+    private static final int PORTAL_FBO_H = 720;
+    private static final int PORTAL_SLOTS = 4;
+
+    // ── "BIGGER ON THE INSIDE" TUNNEL (F5) ───────────────────────────────────
+    //
+    // Structure A (exterior casing, 5-block arch):
+    //   World XZ = (2400, 2400), Y floor = 400,  Depth = 5  blocks (7W × 6H)
+    //
+    // Structure B (interior tunnel, 50-block):
+    //   Same XZ (same chunks!), Y floor = 900,  Depth = 50 blocks (7W × 6H)
+    //
+    // The portal translates purely in Y (+500 inward, −500 outward).
+    // Both structures are in the same CX/CZ columns so their chunks are always
+    // loaded together — no extra chunk-load logic needed.
+    private static final int BOTI_X0     = 2400; // west wall world-X
+    private static final int BOTI_Z0     = 2400; // entrance face world-Z
+    private static final int BOTI_A_Y0   = 400;  // Structure A floor Y
+    private static final int BOTI_B_Y0   = 900;  // Structure B floor Y (CY=1)
+    private static final int BOTI_W      = 7;    // total width  (5 interior + 2 walls)
+    private static final int BOTI_H      = 6;    // total height (4 interior + floor + ceil)
+    private static final int BOTI_A_D    = 5;    // Structure A depth
+    private static final int BOTI_B_D    = 50;   // Structure B depth
+    private static final int BOTI_DY     = BOTI_B_Y0 - BOTI_A_Y0; // 500 — A→B Y offset
+    // Player teleport X band — only trigger portal if in this X range
+    private static final float BOTI_X_LO = BOTI_X0 + 0.5f;
+    private static final float BOTI_X_HI = BOTI_X0 + BOTI_W - 0.5f;
+
+    private boolean botiBuilt       = false;
+    private boolean botiInside      = false; // true when player is in Structure B
+    private Mesh    botiEntryMesh   = null;  // portal quad at A entrance
+    private Mesh    botiExitMesh    = null;  // portal quad at B far end
+    /** Suppress chunk eviction / generation while non-Euclidean space is active. */
+    private boolean nonEuclideanActive = false;
+    private boolean lastF5 = false;
+
+    // ── "ROTATING ROOMS" (F6) ────────────────────────────────────────────────
+    private static final int RR_W        = 12;   // Room width/depth
+    private static final int RR_FLOOR_Y  = 400;  // Floor elevation
+
+    // Grid A (4 rooms) and Grid B (4 rooms) placed exactly 50 blocks apart on X
+    private static final int RR_A_X0     = 2450;
+    private static final int RR_A_Z0     = 2400;
+    private static final int RR_B_X0     = 2500;
+    private static final int RR_B_Z0     = 2400;
+
+    private boolean rrBuilt       = false;
+    private int     rrRoom        = 0;    // 0=outside, 4=GridA SW, 8=GridB SW
+    private Mesh    rrPortal45    = null; // Portal A -> B
+    private Mesh    rrPortal61    = null; // Portal B -> A
+    private boolean lastF6        = false;
     // ─────────────────────────────────────────────────────────────────────────
 
     public void run() {
@@ -307,6 +380,17 @@ public class Window {
                 glfwSetInputMode(window, GLFW_CURSOR,
                         overlay4 ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
                 if (!overlay4) firstMouse[0] = true;
+            }
+
+            // F5 — teleport to "Bigger on the Inside" tunnel entrance
+            // (Actual build + camera placement is handled in the game loop.)
+            if (key == GLFW_KEY_F5 && action == GLFW_RELEASE && !showChat) {
+                lastF5 = false; // edge detected in loop
+            }
+
+            // F6 — teleport to "Rotating Rooms" entrance
+            if (key == GLFW_KEY_F6 && action == GLFW_RELEASE && !showChat) {
+                lastF6 = false; // edge detected in loop
             }
 
             // T opens chat (release event only, so holding T for time-dilation is safe
@@ -415,9 +499,6 @@ public class Window {
     private void loop() {
         int[] ww = new int[1], wh = new int[1];
         glfwGetWindowSize(window, ww, wh);
-
-        // Add this right below it!
-        int[] fw = new int[1], fh = new int[1];
         glfwGetFramebufferSize(window, fw, fh);
 
         GL.createCapabilities();
@@ -425,6 +506,13 @@ public class Window {
 
         glEnable(GL_DEPTH_TEST);
         glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
+
+        // ── PORTAL FBOs (non-Euclidean rendering) ────────────────────────────
+        if (portalFbo == null || fw[0] != portalFboW || fh[0] != portalFboH) {
+            createPortalFbos();
+            portalFboW = fw[0];
+            portalFboH = fh[0];
+        }
 
         Shader shader = new Shader(
                 "src/main/resources/shaders/vertex.glsl",
@@ -530,6 +618,7 @@ public class Window {
             float deltaTime = rawDeltaTime * tc.getScale();
 
             glfwGetWindowSize(window, ww, wh);
+            glfwGetFramebufferSize(window, fw, fh);
 
             if (networkInitialized) {
                 // ── ASYNC MESH DRAINER ─────────────────────────────────────────
@@ -1439,6 +1528,71 @@ public class Window {
                     world.tickLiquids(deltaTime);
                     world.updateChunks(world, worldGen, player);
 
+                    // ── NON-EUCLIDEAN: F5 / F6 BUILD + TELEPORT ──────────────
+                    boolean f5Now = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+                    if (f5Now && !lastF5) {
+                        if (!botiBuilt) buildBOTI();
+                        // Teleport to just outside Structure A entrance
+                        player.position.x = BOTI_X0 + BOTI_W / 2.0f;
+                        player.position.y = BOTI_A_Y0 + 1.5f;
+                        player.position.z = BOTI_Z0 - 3.0f;  // 3 blocks in front of entrance
+                        player.setVelocityY(0f);
+                        camera.yaw   = (float) Math.toRadians(90.0f); // face +Z (into the arch)
+                        camera.pitch = 0f;
+                        botiInside = false;
+                    }
+                    lastF5 = f5Now;
+
+                    boolean f6Now = glfwGetKey(window, GLFW_KEY_F6) == GLFW_PRESS;
+                    if (f6Now && !lastF6) {
+                        if (!rrBuilt) buildRotatingRooms();
+                        // Teleport to just inside Room1 (NW) entry arch, facing south (+Z)
+                        // Entry arch is centred at x = RR_A_X0 + RR_ROOM_W/2 = 2456,
+                        // outer north wall at z = RR_A_Z0 = 2400 → stand 2 blocks inside.
+                        player.position.x = RR_A_X0 + RR_W / 2.0f;
+                        player.position.y = RR_FLOOR_Y + 1.5f;
+                        player.position.z = RR_A_Z0 + 2.0f;
+                        player.setVelocityY(0f);
+                        camera.yaw   = (float) Math.toRadians(270.0); // face +Z (south, into room)
+                        camera.pitch = 0f;
+                        rrRoom = 1;
+                    }
+                    lastF6 = f6Now;
+
+                    // ── BOTI PORTAL CROSSING DETECTION ───────────────────────
+                    if (botiBuilt) {
+                        float px = player.position.x, py = player.position.y, pz = player.position.z;
+                        boolean inXBand = px >= BOTI_X_LO && px <= BOTI_X_HI;
+                        if (inXBand) {
+                            if (!botiInside && py >= BOTI_A_Y0 && py < BOTI_A_Y0 + BOTI_H + 2
+                                    && pz > BOTI_Z0 + 0.5f && pz < BOTI_Z0 + BOTI_A_D) {
+                                // Crossed into A → warp up to B entrance
+                                player.position.y += BOTI_DY;
+                                player.setVelocityY(0f);
+                                botiInside = true;
+                            } else if (botiInside && py >= BOTI_B_Y0 && py < BOTI_B_Y0 + BOTI_H + 2) {
+                                if (pz > BOTI_Z0 + BOTI_B_D - 1.5f) {
+                                    // Near back of B → warp down to A exit
+                                    player.position.y -= BOTI_DY;
+                                    player.position.z  = BOTI_Z0 + BOTI_A_D + 0.5f;
+                                    player.setVelocityY(0f);
+                                    botiInside = false;
+                                } else if (pz < BOTI_Z0 + 0.5f) {
+                                    // Walked back out of B entrance → warp back down to A entrance
+                                    player.position.y -= BOTI_DY;
+                                    player.position.z  = BOTI_Z0 - 0.5f;
+                                    player.setVelocityY(0f);
+                                    botiInside = false;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── ROTATING ROOMS PORTAL CROSSING DETECTION ─────────────
+                    if (rrBuilt && rrRoom > 0) {
+                        updateRotatingRoomsPortal();
+                    }
+
                     Vector3f chestPos = new Vector3f(player.position.x,
                             player.position.y + 0.9f, player.position.z);
                     for (int i = droppedItems.size() - 1; i >= 0; i--) {
@@ -1616,6 +1770,8 @@ public class Window {
                 shader.setUniform("alphaMultiplier", 1.0f);
                 // Default: no texture sampling. Set to 1 + bind texture for ModelMesh rendering.
                 shader.setUniform("useTexture", 0);
+                // Default: normal rendering (not portal FBO passthrough).
+                shader.setUniform("portalMode", 0);
 
                 // ── FLIGHT CAMERA EFFECTS ─────────────────────────────────────
                 // Set dynamic FOV from flight controller boost (player camera only).
@@ -1689,12 +1845,15 @@ public class Window {
                 int R = GameConfig.renderDistance;
                 int playerCY = Math.floorDiv((int) player.position.y, Chunk.HEIGHT);
                 int cyMin = Math.min(playerCY - 4, -4);
+                // Also render one slab above surface so Structure B (Y=900, CY=1) is
+                // visible when the player is inside it.  Empty CY>0 chunks have no
+                // mesh so the extra loop iteration is essentially free.
+                int cyTop = Math.max(0, playerCY + 1);
 
                 // Frustum culling uses the CLEAN view (no roll, no shake) to avoid
                 // popping at the frustum edges during roll animations.
                 Matrix4f cleanMvp = new Matrix4f(projection).mul(baseView);
                 shader.setUniform("mvp", cleanMvp);
-                float[] frustumPlanes = extractFrustumPlanes(cleanMvp);
 
                 // ── DIRTY MESH REBUILD ─────────────────────────────────────────
                 if (!isPreloading) {
@@ -1702,7 +1861,7 @@ public class Window {
                     List<int[]> dirtyList = new ArrayList<>();
                     for (int dx = -R; dx <= R; dx++) {
                         for (int dz = -R; dz <= R; dz++) {
-                            for (int cy = 0; cy >= cyMin; cy--) {
+                            for (int cy = cyTop; cy >= cyMin; cy--) {
                                 Chunk c = world.getChunk(playerCX + dx, cy, playerCZ + dz);
                                 if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
                                     dirtyList.add(new int[]{dx, dz, dx * dx + dz * dz, cy});
@@ -1721,13 +1880,55 @@ public class Window {
                         }
                     }
                 }
-// ── PASS 1: OPAQUE ────────────────────────────────────────────
-                Matrix4f renderMvp = new Matrix4f(projection).mul(view);
-                shader.setUniform("mvp", renderMvp);
+                // ── PORTAL FBO PRE-PASS ───────────────────────────────────────
+                // Render each active portal's destination view into its FBO so
+                // the portal quad shows the correct scene in PASS 1.
+                if (!isPreloading && portalFbo != null) {
 
+                    renderAllPortalFbos(shader, projection, view, camera);
+                }
+
+// ── PASS 1: OPAQUE ────────────────────────────────────────────
+                // Frustum culling uses the ACTUAL view matrix (including roll/shake)
+                Matrix4f renderMvp = new Matrix4f(projection).mul(view);
+                float[] frustumPlanes = extractFrustumPlanes(renderMvp);
+
+                // ── DIRTY MESH REBUILD ─────────────────────────────────────────
+                if (!isPreloading) {
+                    int maxMeshCompilesPerFrame = 6;
+                    List<int[]> dirtyList = new ArrayList<>();
+                    for (int dx = -R; dx <= R; dx++) {
+                        for (int dz = -R; dz <= R; dz++) {
+                            for (int cy = cyTop; cy >= cyMin; cy--) {
+                                Chunk c = world.getChunk(playerCX + dx, cy, playerCZ + dz);
+                                if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
+                                    dirtyList.add(new int[]{dx, dz, dx * dx + dz * dz, cy});
+                                }
+                            }
+                        }
+                    }
+                    dirtyList.sort(Comparator.comparingInt(e -> e[2]));
+                    int compiled = 0;
+                    for (int[] e : dirtyList) {
+                        if (compiled >= maxMeshCompilesPerFrame) break;
+                        Chunk c = world.getChunk(playerCX + e[0], e[3], playerCZ + e[1]);
+                        if (c != null && c.dirty && c.state == Chunk.ChunkState.MESHED) {
+                            world.buildChunkMeshes(c);
+                            compiled++;
+                        }
+                    }
+                }
+
+                // ── PORTAL FBO PRE-PASS ───────────────────────────────────────
+                if (!isPreloading && portalFbo != null) {
+                    renderAllPortalFbos(shader, projection, view, camera);
+                }
+
+                // ── PASS 1: OPAQUE ────────────────────────────────────────────
+                shader.setUniform("mvp", renderMvp);
                 for (int dx = -R; dx <= R; dx++) {
                     for (int dz = -R; dz <= R; dz++) {
-                        for (int cy = 0; cy >= cyMin; cy--) {
+                        for (int cy = cyTop; cy >= cyMin; cy--) {
                             Chunk chunk = world.getChunk(playerCX + dx, cy, playerCZ + dz);
                             if (chunk != null && chunk.opaqueMesh != null
                                     && isAabbInFrustum(frustumPlanes, chunk)) {
@@ -1737,13 +1938,18 @@ public class Window {
                     }
                 }
 
+                // ── PASS 1b: PORTAL QUADS (FBO texture displayed on quad) ────────
+                if (!isPreloading && portalFbo != null) {
+                    renderAllPortalQuads(shader, renderMvp);
+                }
+
                 // ── PASS 2: TRANSPARENT ───────────────────────────────────────
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
+                shader.setUniform("mvp", renderMvp);
                 for (int dx = -R; dx <= R; dx++) {
                     for (int dz = -R; dz <= R; dz++) {
-                        for (int cy = 0; cy >= cyMin; cy--) {
+                        for (int cy = cyTop; cy >= cyMin; cy--) {
                             Chunk chunk = world.getChunk(playerCX + dx, cy, playerCZ + dz);
                             if (chunk != null && chunk.transparentMesh != null
                                     && isAabbInFrustum(frustumPlanes, chunk)) {
@@ -2612,6 +2818,408 @@ public class Window {
             if (hotbar[i] == Block.AIR || inventory.getCount(hotbar[i]) <= 0) {
                 hotbar[i] = block; return;
             }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  PORTAL FBO INFRASTRUCTURE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Allocate PORTAL_SLOTS FBO objects sized to the PHYSICAL framebuffer (fw×fh).
+     * Using the physical size ensures gl_FragCoord / viewportSize is always 0..1
+     * on both normal and Retina/HiDPI displays, preventing the "4 squares" tiling
+     * artefact that occurs when fw[0] > PORTAL_FBO_W.
+     * Call once after GL context + glfwGetFramebufferSize are ready.
+     */
+    private void createPortalFbos() {
+        destroyPortalFbos();
+        int w = Math.max(1, fw[0]);
+        int h = Math.max(1, fh[0]);
+        portalFbo      = new int[PORTAL_SLOTS];
+        portalColorTex = new int[PORTAL_SLOTS];
+        portalDepthRbo = new int[PORTAL_SLOTS];
+        for (int i = 0; i < PORTAL_SLOTS; i++) {
+            portalColorTex[i] = org.lwjgl.opengl.GL11.glGenTextures();
+            org.lwjgl.opengl.GL11.glBindTexture(
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_2D, portalColorTex[i]);
+            org.lwjgl.opengl.GL11.glTexImage2D(
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0,
+                    org.lwjgl.opengl.GL11.GL_RGB, w, h, 0,
+                    org.lwjgl.opengl.GL11.GL_RGB,
+                    org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE,
+                    (java.nio.ByteBuffer) null);
+            org.lwjgl.opengl.GL11.glTexParameteri(
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_2D,
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_MIN_FILTER,
+                    org.lwjgl.opengl.GL11.GL_LINEAR);
+            org.lwjgl.opengl.GL11.glTexParameteri(
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_2D,
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_MAG_FILTER,
+                    org.lwjgl.opengl.GL11.GL_LINEAR);
+
+            portalDepthRbo[i] = org.lwjgl.opengl.GL30.glGenRenderbuffers();
+            org.lwjgl.opengl.GL30.glBindRenderbuffer(
+                    org.lwjgl.opengl.GL30.GL_RENDERBUFFER, portalDepthRbo[i]);
+            org.lwjgl.opengl.GL30.glRenderbufferStorage(
+                    org.lwjgl.opengl.GL30.GL_RENDERBUFFER,
+                    org.lwjgl.opengl.GL14.GL_DEPTH_COMPONENT24,
+                    w, h);
+
+            portalFbo[i] = org.lwjgl.opengl.GL30.glGenFramebuffers();
+            org.lwjgl.opengl.GL30.glBindFramebuffer(
+                    org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, portalFbo[i]);
+            org.lwjgl.opengl.GL30.glFramebufferTexture2D(
+                    org.lwjgl.opengl.GL30.GL_FRAMEBUFFER,
+                    org.lwjgl.opengl.GL30.GL_COLOR_ATTACHMENT0,
+                    org.lwjgl.opengl.GL11.GL_TEXTURE_2D, portalColorTex[i], 0);
+            org.lwjgl.opengl.GL30.glFramebufferRenderbuffer(
+                    org.lwjgl.opengl.GL30.GL_FRAMEBUFFER,
+                    org.lwjgl.opengl.GL30.GL_DEPTH_ATTACHMENT,
+                    org.lwjgl.opengl.GL30.GL_RENDERBUFFER, portalDepthRbo[i]);
+            org.lwjgl.opengl.GL30.glBindFramebuffer(
+                    org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, 0);
+        }
+    }
+
+    private void destroyPortalFbos() {
+        if (portalFbo == null) return;
+        for (int i = 0; i < PORTAL_SLOTS; i++) {
+            if (portalFbo[i]      != 0) org.lwjgl.opengl.GL30.glDeleteFramebuffers(portalFbo[i]);
+            if (portalColorTex[i] != 0) org.lwjgl.opengl.GL11.glDeleteTextures(portalColorTex[i]);
+            if (portalDepthRbo[i] != 0) org.lwjgl.opengl.GL30.glDeleteRenderbuffers(portalDepthRbo[i]);
+        }
+        portalFbo = portalColorTex = portalDepthRbo = null;
+    }
+
+    /**
+     * Render all visible chunks into a portal FBO using virtual camera MVP.
+     * {@code vcx}/{@code vcz} are the chunk coords of the virtual camera's position.
+     * {@code cyHi}/{@code cyLo} control which vertical CY slabs to include.
+     */
+    private void renderChunksToFbo(Shader shader, Matrix4f mvp, int vcx, int vcz,
+                                   int cyHi, int cyLo) {
+        int R = GameConfig.renderDistance + 1;
+        float[] planes = extractFrustumPlanes(mvp);
+        shader.setUniform("mvp", mvp);
+        for (int dx = -R; dx <= R; dx++) {
+            for (int dz = -R; dz <= R; dz++) {
+                for (int cy = cyHi; cy >= cyLo; cy--) {
+                    Chunk chunk = world.getChunk(vcx + dx, cy, vcz + dz);
+                    if (chunk != null && chunk.opaqueMesh != null
+                            && isAabbInFrustum(planes, chunk)) {
+                        chunk.opaqueMesh.render();
+                    }
+                }
+            }
+        }
+    }
+    /** Pre-render all active portals into their FBOs before the main scene draw. */
+    private void renderAllPortalFbos(Shader shader, Matrix4f projection, Matrix4f view, Camera camera) {
+        glDisable(GL_STENCIL_TEST);
+
+        // ── BOTI ENTRY PORTAL (slot 0) ──────
+        if (botiBuilt && !botiInside && botiEntryMesh != null) {
+            Matrix4f vMvp = new Matrix4f(projection).mul(view).translate(0f, -BOTI_DY, 0f);
+            int vcx = Math.floorDiv((int) camera.position.x, Chunk.SIZE);
+            int vcz = Math.floorDiv((int) camera.position.z, Chunk.SIZE);
+            org.lwjgl.opengl.GL30.glBindFramebuffer(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, portalFbo[0]);
+            glClearColor(0.03f, 0.02f, 0.05f, 1f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glViewport(0, 0, Math.max(1, fw[0]), Math.max(1, fh[0]));
+            renderChunksToFbo(shader, vMvp, vcx, vcz, 2, -1);
+        }
+
+        // ── BOTI EXIT PORTAL (slot 1) ─
+        if (botiBuilt && botiInside && botiExitMesh != null) {
+            Matrix4f vMvp = new Matrix4f(projection).mul(view).translate(0f, BOTI_DY, (BOTI_B_D - BOTI_A_D));
+            int vcx = Math.floorDiv((int) camera.position.x, Chunk.SIZE);
+            int vcz = Math.floorDiv((int) (camera.position.z - (BOTI_B_D - BOTI_A_D)), Chunk.SIZE);
+            org.lwjgl.opengl.GL30.glBindFramebuffer(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, portalFbo[1]);
+            glClearColor(0.5f, 0.7f, 0.9f, 1f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glViewport(0, 0, Math.max(1, fw[0]), Math.max(1, fh[0]));
+            renderChunksToFbo(shader, vMvp, vcx, vcz, 1, -4);
+        }
+
+        // ── RR PORTAL 4→5 (slot 2) ──────────
+        if (rrBuilt && rrPortal45 != null && rrRoom == 4) {
+            Matrix4f vMvp = new Matrix4f(projection).mul(view).translate(-50f, 0f, 0f);
+            int vcx = Math.floorDiv((int) (camera.position.x + 50f), Chunk.SIZE);
+            int vcz = Math.floorDiv((int) camera.position.z, Chunk.SIZE);
+            org.lwjgl.opengl.GL30.glBindFramebuffer(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, portalFbo[2]);
+            glClearColor(0.03f, 0.02f, 0.05f, 1f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glViewport(0, 0, Math.max(1, fw[0]), Math.max(1, fh[0]));
+            renderChunksToFbo(shader, vMvp, vcx, vcz, 1, -1);
+        }
+
+        // ── RR PORTAL 6→1 (slot 3) ──────────
+        if (rrBuilt && rrPortal61 != null && rrRoom == 8) {
+            Matrix4f vMvp = new Matrix4f(projection).mul(view).translate(50f, 0f, 0f);
+            int vcx = Math.floorDiv((int) (camera.position.x - 50f), Chunk.SIZE);
+            int vcz = Math.floorDiv((int) camera.position.z, Chunk.SIZE);
+            org.lwjgl.opengl.GL30.glBindFramebuffer(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, portalFbo[3]);
+            glClearColor(0.03f, 0.02f, 0.05f, 1f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glViewport(0, 0, Math.max(1, fw[0]), Math.max(1, fh[0]));
+            renderChunksToFbo(shader, vMvp, vcx, vcz, 1, -1);
+        }
+
+        org.lwjgl.opengl.GL30.glBindFramebuffer(org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, 0);
+        glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
+        glViewport(0, 0, Math.max(1, fw[0]), Math.max(1, fh[0]));
+    }
+
+    /** Draw portal quads using the FBO textures rendered above. */
+    private void renderAllPortalQuads(Shader shader, Matrix4f mvp) {
+        glDisable(GL_STENCIL_TEST);
+        glDepthFunc(GL_LEQUAL);
+
+        if (botiBuilt && !botiInside && botiEntryMesh != null) {
+            drawPortalQuad(shader, mvp, portalColorTex[0], botiEntryMesh);
+        }
+        if (botiBuilt && botiInside && botiExitMesh != null) {
+            drawPortalQuad(shader, mvp, portalColorTex[1], botiExitMesh);
+        }
+        if (rrBuilt && rrPortal45 != null && rrRoom == 4) {
+            drawPortalQuad(shader, mvp, portalColorTex[2], rrPortal45);
+        }
+        if (rrBuilt && rrPortal61 != null && rrRoom == 8) {
+            drawPortalQuad(shader, mvp, portalColorTex[3], rrPortal61);
+        }
+
+        glDepthFunc(GL_LESS);
+        shader.setUniform("portalMode", 0);
+        shader.setUniform("useTexture",  0);
+        org.lwjgl.opengl.GL11.glBindTexture(org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0);
+    }
+
+    private void drawPortalQuad(Shader shader, Matrix4f mvp, int texId, Mesh quad) {
+        org.lwjgl.opengl.GL13.glActiveTexture(org.lwjgl.opengl.GL13.GL_TEXTURE0);
+        org.lwjgl.opengl.GL11.glBindTexture(org.lwjgl.opengl.GL11.GL_TEXTURE_2D, texId);
+        shader.setUniform("texSampler",   0);
+        shader.setUniform("portalMode",   1);
+        // CRITICAL: must pass the PHYSICAL framebuffer size, not the logical window size.
+        // gl_FragCoord is in physical pixels; dividing by the logical size on a Retina
+        // display gives UV in [0,2] instead of [0,1], causing 2×2 = 4-quad tiling.
+        shader.setUniform("viewportSize", (float) Math.max(1, fw[0]), (float) Math.max(1, fh[0]));
+        shader.setUniform("mvp", mvp);
+        quad.render();
+    }
+
+    /**
+     * Build a portal-surface quad (4 verts, 2 triangles).
+     * The vertices span the interior opening of the arch/doorway.
+     * Normal is always (0,1,0) — not used by portalMode but required by the mesh format.
+     */
+    private Mesh makeQuad(float x0, float y0, float z0,
+                          float x1, float y1, float z1,
+                          float x2, float y2, float z2,
+                          float x3, float y3, float z3) {
+        // Neutral white RGBA so the FBO texture is not tinted.
+        float r = 1f, g = 1f, b = 1f, a = 1f;
+        float nx = 0f, ny = 1f, nz = 0f;
+        float[] verts = {
+            x0, y0, z0,  r, g, b, a,  nx, ny, nz,
+            x1, y1, z1,  r, g, b, a,  nx, ny, nz,
+            x2, y2, z2,  r, g, b, a,  nx, ny, nz,
+            x3, y3, z3,  r, g, b, a,  nx, ny, nz,
+        };
+        return new Mesh(verts, new int[]{ 0, 1, 2,  0, 2, 3 });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  "BIGGER ON THE INSIDE" TUNNEL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Build Structure A (exterior arch, 5-deep) and Structure B (interior tunnel,
+     * 50-deep) at the same XZ but different Y (A=400, B=900).  Also allocates FBOs
+     * and creates portal quad meshes.
+     */
+    private void buildBOTI() {
+        if (portalFbo == null) createPortalFbos();
+
+        // ── Structure A — exterior casing ─────────────────────────────────────
+        buildTunnel(BOTI_X0, BOTI_A_Y0, BOTI_Z0, BOTI_W, BOTI_H, BOTI_A_D,
+                    Block.STONE, Block.STONE_LICHEN);
+
+        // ── Structure B — interior tunnel ─────────────────────────────────────
+        // Same XZ, higher Y (CY=1).  Alternating stone and fossil every 10 blocks
+        // gives the player visual feedback of distance (like stripes on a tunnel).
+        buildTunnel(BOTI_X0, BOTI_B_Y0, BOTI_Z0, BOTI_W, BOTI_H, BOTI_B_D,
+                    Block.STONE, Block.FOSSIL_STONE);
+
+        // ── Portal quad meshes ─────────────────────────────────────────────────
+        // Entry portal: flush with Structure A's entrance face (z = BOTI_Z0)
+        float ax0 = BOTI_X0 + 1f, ax1 = BOTI_X0 + BOTI_W - 1f;
+        float ay0 = BOTI_A_Y0 + 1f, ay1 = BOTI_A_Y0 + BOTI_H - 1f;
+        float az  = BOTI_Z0 + 0.01f; // tiny offset to avoid z-fight with entrance wall
+        botiEntryMesh = makeQuad(ax0, ay0, az,  ax1, ay0, az,
+                                 ax1, ay1, az,  ax0, ay1, az);
+
+        // Exit portal: just inside the back wall of Structure B.
+        // B's back wall block is at z = BOTI_Z0+BOTI_B_D-1 = 2449.
+        // The portal quad is placed at z = 2448.99 — the inner face of that wall,
+        // so the player in B sees the outside-world view through the portal.
+        float bx0 = BOTI_X0 + 1f, bx1 = BOTI_X0 + BOTI_W - 1f;
+        float by0 = BOTI_B_Y0 + 1f, by1 = BOTI_B_Y0 + BOTI_H - 1f;
+        float bz  = BOTI_Z0 + BOTI_B_D - 1 - 0.01f;  // = 2448.99
+        botiExitMesh = makeQuad(bx0, by0, bz,  bx1, by0, bz,
+                                bx1, by1, bz,  bx0, by1, bz);
+
+        botiBuilt = true;
+    }
+
+
+    private void buildRotatingRooms() {
+        if (portalFbo == null) createPortalFbos();
+        java.util.Set<Long> chunks = new java.util.HashSet<>();
+
+        // Build two identical 2x2 looping grids
+        buildGrid(RR_A_X0, RR_A_Z0, chunks, true);
+        buildGrid(RR_B_X0, RR_B_Z0, chunks, false);
+
+        // Rebuild meshes
+        for (long key : chunks) {
+            int cz2 = (int)((key & 0xFFFFF) - 4096);
+            int cy2 = (int)(((key >> 20) & 0xFF) - 64);
+            int cx2 = (int)((key >> 28) - 4096);
+            Chunk c = world.getOrCreateChunk(cx2, cy2, cz2);
+            c.noEvict = true;
+            world.buildChunkMeshes(c);
+            c.state = Chunk.ChunkState.MESHED;
+        }
+
+        float py0 = RR_FLOOR_Y + 1f;
+        float py1 = RR_FLOOR_Y + 5f;
+
+        // Portal 1 (A -> B): Placed in Grid A's SW room, North door.
+        float pA_x0 = RR_A_X0 + RR_W / 2f - 1f;
+        float pA_x1 = RR_A_X0 + RR_W / 2f + 2f;
+        float pA_z  = RR_A_Z0 + RR_W + 0.01f;
+        rrPortal45 = makeQuad(pA_x1, py0, pA_z,  pA_x0, py0, pA_z,  pA_x0, py1, pA_z,  pA_x1, py1, pA_z);
+
+        // Portal 2 (B -> A): Placed in Grid B's SW room, North door.
+        float pB_x0 = RR_B_X0 + RR_W / 2f - 1f;
+        float pB_x1 = RR_B_X0 + RR_W / 2f + 2f;
+        float pB_z  = RR_B_Z0 + RR_W + 0.01f;
+        rrPortal61 = makeQuad(pB_x1, py0, pB_z,  pB_x0, py0, pB_z,  pB_x0, py1, pB_z,  pB_x1, py1, pB_z);
+
+        rrBuilt = true;
+    }
+    private void buildTunnel(int x0, int y0, int z0,
+                             int w, int h, int d,
+                             Block wallBlock, Block accentBlock) {
+        java.util.Set<Long> chunksToRebuild = new java.util.HashSet<>();
+
+        for (int x = x0; x < x0 + w; x++) {
+            for (int y = y0; y < y0 + h; y++) {
+                for (int z = z0; z < z0 + d; z++) {
+                    boolean isWall    = (x == x0 || x == x0 + w - 1);
+                    boolean isFloor   = (y == y0);
+                    boolean isCeiling = (y == y0 + h - 1);
+
+                    // FIX: No back wall! It is an open tube.
+                    boolean isSolid   = isWall || isFloor || isCeiling;
+
+                    Block block = Block.AIR;
+                    if (isSolid) {
+                        block = ((z - z0) % 10 < 2) ? accentBlock : wallBlock;
+                    }
+                    world.setBlockWithMeta(x, y, z, block, (byte) 0, false);
+
+                    int cx = Math.floorDiv(x, Chunk.SIZE);
+                    int cy = Math.floorDiv(y, Chunk.HEIGHT);
+                    int cz = Math.floorDiv(z, Chunk.SIZE);
+                    long key = ((long)(cx + 4096) << 28) | ((long)(cy + 64) << 20) | (cz + 4096);
+                    chunksToRebuild.add(key);
+                }
+            }
+        }
+
+        for (long key : chunksToRebuild) {
+            int cz2 = (int)((key & 0xFFFFF) - 4096);
+            int cy2 = (int)(((key >> 20) & 0xFF) - 64);
+            int cx2 = (int)((key >> 28) - 4096);
+            Chunk c = world.getOrCreateChunk(cx2, cy2, cz2);
+            c.noEvict = true;
+            world.buildChunkMeshes(c);
+            c.state = Chunk.ChunkState.MESHED;
+        }
+    }
+
+    private void buildGrid(int gx, int gz, java.util.Set<Long> chunks, boolean isGridA) {
+        int y0 = RR_FLOOR_Y;
+        int xDiv = gx + RR_W, zDiv = gz + RR_W;
+        int doorN = gz + RR_W / 2, doorS = gz + RR_W + RR_W / 2;
+        int doorW = gx + RR_W / 2, doorE = gx + RR_W + RR_W / 2;
+
+        for (int x = gx; x <= gx + 2*RR_W; x++) {
+            for (int z = gz; z <= gz + 2*RR_W; z++) {
+                for (int y = y0; y <= y0 + 6; y++) {
+                    boolean floor = (y == y0), ceil = (y == y0 + 6);
+                    boolean outerW = (x == gx), outerE = (x == gx + 2*RR_W);
+                    boolean outerN = (z == gz), outerS = (z == gz + 2*RR_W);
+                    boolean xDivCol = (x == xDiv), zDivRow = (z == zDiv);
+                    boolean pillar = (xDivCol && zDivRow);
+
+                    // Clockwise doorways around the pillar
+                    boolean doorNW_NE = xDivCol && Math.abs(z - doorN) <= 1 && y > y0 && y < y0 + 4;
+                    boolean doorNE_SE = zDivRow && Math.abs(x - doorE) <= 1 && y > y0 && y < y0 + 4;
+                    boolean doorSE_SW = xDivCol && Math.abs(z - doorS) <= 1 && y > y0 && y < y0 + 4;
+                    boolean doorSW_NW = zDivRow && Math.abs(x - doorW) <= 1 && y > y0 && y < y0 + 4;
+
+                    boolean entryArch = isGridA && outerN && Math.abs(x - doorW) <= 1 && y > y0 && y < y0 + 4;
+
+                    Block b = Block.AIR;
+                    if (floor || ceil || pillar) b = Block.STONE;
+                    else if (doorNW_NE || doorNE_SE || doorSE_SW || doorSW_NW) b = Block.AIR;
+                    else if (outerW || outerE || outerN || outerS || xDivCol || zDivRow) {
+                        b = entryArch ? Block.AIR : Block.STONE;
+                    }
+
+                    // FIX: Both grids use identical materials so the illusion is perfectly seamless
+                    if (b == Block.STONE && !floor && !ceil && !pillar) {
+                        if ((x + z) % 8 == 0) b = Block.STONE_LICHEN;
+                    }
+
+                    world.setBlockWithMeta(x, y, z, b, (byte)0, false);
+                    int cx = Math.floorDiv(x, Chunk.SIZE), cy = Math.floorDiv(y, Chunk.HEIGHT), cz = Math.floorDiv(z, Chunk.SIZE);
+                    chunks.add(((long)(cx+4096)<<28)|((long)(cy+64)<<20)|(cz+4096));
+                }
+            }
+        }
+    }
+
+    private void updateRotatingRoomsPortal() {
+        float px = player.position.x, pz = player.position.z;
+
+        if (px >= RR_A_X0 && px <= RR_A_X0 + 2*RR_W && pz >= RR_A_Z0 && pz <= RR_A_Z0 + 2*RR_W) {
+            boolean inSW = px < RR_A_X0 + RR_W && pz > RR_A_Z0 + RR_W;
+            rrRoom = inSW ? 4 : 1;
+
+            if (inSW && Math.abs(px - (RR_A_X0 + RR_W / 2f)) < 2f) {
+                // Crossing Portal 1 walking North
+                if (pz < RR_A_Z0 + RR_W + 0.01f) {
+                    player.position.x += 50f; // Instant mathematical warp to Grid B
+                    rrRoom = 8;
+                }
+            }
+        } else if (px >= RR_B_X0 && px <= RR_B_X0 + 2*RR_W && pz >= RR_B_Z0 && pz <= RR_B_Z0 + 2*RR_W) {
+            boolean inSW = px < RR_B_X0 + RR_W && pz > RR_B_Z0 + RR_W;
+            rrRoom = inSW ? 8 : 5;
+
+            if (inSW && Math.abs(px - (RR_B_X0 + RR_W / 2f)) < 2f) {
+                // Crossing Portal 2 walking North
+                if (pz < RR_B_Z0 + RR_W + 0.01f) {
+                    player.position.x -= 50f; // Instant mathematical warp to Grid A
+                    rrRoom = 4;
+                }
+            }
+        } else {
+            rrRoom = 0;
         }
     }
 }

@@ -32,9 +32,24 @@ uniform vec3  overlayVignetteColor;
 // Window.java sets this per-draw-call (0.05–0.40) then resets to 1.0.
 uniform float alphaMultiplier;
 
+// ── PORTAL RENDERING ─────────────────────────────────────────────────────────
+// When portalMode == 1 the fragment samples texSampler using screen-space UVs
+// (gl_FragCoord / viewportSize) and returns immediately.  This displays the
+// FBO colour texture on a portal quad with perfect alignment.
+// portalMode == 0 (default) → normal lit rendering, no change.
+uniform int   portalMode;
+uniform vec2  viewportSize;   // FBO dimensions (set to PORTAL_FBO_W/H)
+
 out vec4 FragColor;
 
 void main() {
+    // ── FBO PORTAL PASSTHROUGH ────────────────────────────────────────────────
+    if (portalMode == 1) {
+        vec2 screenUV = gl_FragCoord.xy / viewportSize;
+        FragColor = texture(texSampler, screenUV);
+        return;
+    }
+
     float diffuse = max(0.0, dot(normalize(vertexNormal), normalize(sunDirection)));
     float light   = ambientStrength + sunStrength * diffuse;
 
