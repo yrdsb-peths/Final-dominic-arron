@@ -223,6 +223,46 @@ public class Window {
     private boolean wasCharging      = false;   // edge-detect for preload trigger
     /** Last-frame mana, used to detect the moment mana hits zero. */
     private float   lastMana         = -1f;
+    /** Last-frame camera position — lets us derive listener velocity for Doppler. */
+    private final Vector3f lastListenerPos = new Vector3f();
+    private boolean listenerPosInit = false;
+    /** Last muffle amount sent to OpenAL; only re-sent when it moves meaningfully. */
+    private float   lastMuffle       = 0f;
+    /** Last reverb environment — only call setEnvironment when this changes. */
+    private int     lastEnv          = AudioManager.ENV_NONE;
+
+    // ── Water sound state ────────────────────────────────────────────────────
+    private boolean lastFeetInWater  = false;
+    private boolean lastCamSubmerged = false;
+
+    // ── Wind stinger timers ──────────────────────────────────────────────────
+    // wind_harsh: random gusts fired during fast air movement.
+    // caveWindCooldown: wind_cemetery eerie stinger, fires slowly in cave env.
+    private float windStingerCooldown = 0f;
+    private float caveWindCooldown    = 5f;   // start at 5 s so it doesn't fire on room entry
+    // windFade: 0→1 multiplier that smoothly fades wind beds in/out instead of
+    // abruptly starting/stopping them (avoids pops and sudden silence on landing).
+    private float windFade            = 0f;
+
+    // ── Footstep state ───────────────────────────────────────────────────────
+    // Walking/running files are long loops — we keep one looping continuously
+    // rather than re-triggering them as one-shots.
+    private String  activeStepLoop    = null; // which step loop is currently running
+
+    // ── Flight-stop swoosh ────────────────────────────────────────────────────
+    private boolean lastFlightMode    = false; // player.debugMode last frame (before update)
+
+    // ── Crystal dig sequence (plays clank1..4 in shuffled random order) ─────
+    // cystal_clank2 has a typo in the filename on disk — keep it to match the file.
+    static final String[] CRYSTAL_CLANKS  = {
+            "crystal_clank1", "cystal_clank2", "crystal_clank3", "crystal_clank4"
+    };
+    private int[]   crystalClankOrder = {0, 1, 2, 3};
+    private int     crystalClankIdx   = 4;    // force a shuffle on first use
+
+    // ── Dig sound timer (fires while holding break key) ────────────────────
+    float digSoundTimer = 0f;   // package-private — reset from WindowHud.updateBreaking()
+    float digPreDelay   = 0f;   // how long break key has been held — sounds start after a brief delay
     float   pathReadiness    = 0f;      // 0..1 shown in HUD during charging
     private boolean clientSpawnedAtHost = false;
 
@@ -395,14 +435,6 @@ public class Window {
                 lastF6 = false; // edge detected in loop
             }
 
-            // F8 — toggle Animation Editor
-            if (key == GLFW_KEY_F8 && action == GLFW_RELEASE) {
-                hud.animEditor.visible = !hud.animEditor.visible;
-                boolean editorOpen = hud.animEditor.visible;
-                glfwSetInputMode(window, GLFW_CURSOR,
-                        editorOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-            }
-
             // T opens chat (release event only, so holding T for time-dilation is safe
             // because time-dilation uses glfwGetKey in the game loop, not this callback)
             if (key == GLFW_KEY_T && action == GLFW_RELEASE && !showChat && !showDebug && !isPaused) {
@@ -430,7 +462,7 @@ public class Window {
                 boolean kamuiConsumedLMB = player != null && player.abilities.isKamui;
                 if (!standConsumedLMB && !kamuiConsumedLMB) {
                     breakingActive = (action == GLFW_PRESS || action == GLFW_REPEAT);
-                    if (action == GLFW_RELEASE) breakProgress = 0.0f;
+                    if (action == GLFW_RELEASE) { breakProgress = 0.0f; digPreDelay = 0.0f; }
                 }
                 if (kamuiConsumedLMB && action == GLFW_RELEASE) {
                     // Release resets absorption charge
@@ -563,13 +595,15 @@ public class Window {
         Camera camera = new Camera();
         setupMouseLook(camera);
         hud = new WindowHud(this);
-        hud.init();  // initialises AnimEditor FBO + ModelRenderer shader
 
         // ── AUDIO PRELOAD ──────────────────────────────────────────────────────
         // Warm up the JVM audio mixer so the very first play() call has no delay,
         // then decode every sound file once into heap memory.  Playback from this
         // point on is pure memory copy — no classpath IO, no thread-creation cost.
         AudioManager.warmup();
+        // Subtle Doppler — enough to feel projectiles/wind pass by without the
+        // cartoonish over-pitch a factor of 1.0 produces.
+        AudioManager.setDopplerFactor(0.7f);
         for (String snd : new String[]{
                 // Kamui
                 "kamui_enter", "kamui_exit", "kamui_duration", "kamui_distortion",
@@ -577,6 +611,8 @@ public class Window {
                 // Combat
                 "swing", "hit", "block", "charged_release", "blink",
                 "grab_start", "grab_slam", "ground_smash", "fall_smash",
+                // Snipe / Manhattan Transfer
+                "snipe1", "snipe2", "snipe_loadgun", "snipe_redirect",
                 // Abilities
                 "stone_canon", "charging",
                 "quagmire", "clap", "paper_explode",
@@ -585,14 +621,24 @@ public class Window {
                 "lightning_charge", "lightning_strike",
                 // UI / feedback
                 "mana_empty",
-                // Environment
-                "wind_fly", "wind_fall",
-                // Blocks
-                "block_stone_place", "block_stone_break",
-                "block_dirt_place",  "block_dirt_break",
-                "block_wood_place",  "block_wood_break",
-                "block_sand_place",  "block_sand_break",
-                "block_crystal_place", "block_crystal_break",
+                // Wind (layered beds + stingers)
+                "wind/wind_soft", "wind/wind_blow", "wind/wind_big",
+                "wind/wind_harsh", "wind/wind_cemetery",
+                // Water (one-shots + ambience loop)
+                "water/water_splash", "water/water_enter",
+                "water/water_leave", "water/water_exit2", "water/water_exit3",
+                "water/underwater_ambience",
+                // Landing impacts
+                "fall_hit", "fall_light", "fall_sandy",
+                // Flight
+                "swoosh",
+                // Footsteps
+                "walking", "running", "walking_sand",
+                // Block sounds (place + break + dig)
+                "block_stone", "block_soil", "block_sand", "block_crystal",
+                "stone_digging", "soil_digging", "sand_digging",
+                "crystal_clank1", "cystal_clank2", "crystal_clank3", "crystal_clank4",
+                // (block sounds now live under "block_stone/soil/sand/crystal" — see preload above)
         }) { AudioManager.preload(snd); }
 
         // ── SPAWN POINT ────────────────────────────────────────────────────────
@@ -704,19 +750,20 @@ public class Window {
                         isPreloading = false;
                         int spawnX = (int)Math.floor(player.position.x);
                         int spawnZ = (int)Math.floor(player.position.z);
-                        // Scan from ceiling down; find first solid block with 3 clear blocks
-                        // above it so player never materialises inside stone.
+                        // Scan from ceiling down; find the highest outdoor solid block.
+                        // Requires full sky visibility above (no solid block between
+                        // the surface and Chunk.HEIGHT) — this prevents spawning on
+                        // cave ceilings or inside underground structures.
+                        outer:
                         for (int ly = Chunk.HEIGHT - 2; ly >= 1; ly--) {
-                            if (world.getBlock(spawnX, ly, spawnZ).isSolid()) {
-                                boolean clear = !world.getBlock(spawnX, ly + 1, spawnZ).isSolid()
-                                             && !world.getBlock(spawnX, ly + 2, spawnZ).isSolid()
-                                             && !world.getBlock(spawnX, ly + 3, spawnZ).isSolid();
-                                if (clear) {
-                                    spawnSurfaceY     = ly + 1.5f;
-                                    player.position.y = spawnSurfaceY;
-                                    break;
-                                }
+                            if (!world.getBlock(spawnX, ly, spawnZ).isSolid()) continue;
+                            // Require all blocks above to be non-solid (outdoor surface)
+                            for (int sy = ly + 1; sy < Chunk.HEIGHT; sy++) {
+                                if (world.getBlock(spawnX, sy, spawnZ).isSolid()) continue outer;
                             }
+                            spawnSurfaceY     = ly + 1.5f;
+                            player.position.y = spawnSurfaceY;
+                            break;
                         }
                         // Zero out any velocity accumulated during loading so the player
                         // doesn't punch straight through the freshly-meshed ground.
@@ -731,24 +778,108 @@ public class Window {
 
                     if (!showChat && !showNoiseViewer && !isPaused && !showHelp) {
                         // ── PLAYER UPDATE (time-scaled) ────────────────────────
+                        // Save state BEFORE update so we can detect transitions.
+                        // player.update() resets highestY on landing and toggles debugMode.
+                        float   savedHighestY    = player.highestY;
+                        boolean wasOnGroundAudio = player.isOnGround();
+                        boolean wasFlightMode    = player.debugMode;
                         player.update(window, camera, world, deltaTime);
                         hud.updateBreaking(deltaTime);
+
+                        // ── 3D AUDIO LISTENER ──────────────────────────────────
+                        // Move the OpenAL listener to the camera each frame and
+                        // derive its velocity from the position delta (Player has
+                        // no full velocity vector). Velocity drives Doppler shift.
+                        Vector3f listenerVel = new Vector3f();
+                        if (listenerPosInit && deltaTime > 1e-4f) {
+                            listenerVel.set(camera.position).sub(lastListenerPos).div(deltaTime);
+                            // Clamp absurd teleport spikes (kamui / respawn) so we
+                            // don't fire a Doppler screech across the whole map.
+                            if (listenerVel.length() > 60f) listenerVel.set(0, 0, 0);
+                        }
+                        AudioManager.updateListener(camera, listenerVel);
+                        lastListenerPos.set(camera.position);
+                        listenerPosInit = true;
+
+                        // ── REVERB ENVIRONMENT ─────────────────────────────────
+                        // Checked every frame but only applied when the zone
+                        // actually changes, so there is no per-frame OpenAL cost.
+                        //
+                        // Priority: underwater > cave > open air.
+                        // isUnderRoof(12): tweak the number to change how "tight"
+                        // a space needs to be before reverb kicks in.
+                        int targetEnv;
+                        if (player.isCameraSubmerged()) {
+                            targetEnv = AudioManager.ENV_UNDERWATER;
+                        } else if (isUnderRoof(12)) {
+                            targetEnv = AudioManager.ENV_CAVE;
+                        } else {
+                            targetEnv = AudioManager.ENV_NONE;
+                        }
+                        if (targetEnv != lastEnv) {
+                            AudioManager.setEnvironment(targetEnv);
+                            lastEnv = targetEnv;
+                        }
+
+                        // ── FLIGHT STOP SWOOSH ─────────────────────────────────
+                        // Fires on the frame flight mode turns off (double-tap space).
+                        if (wasFlightMode && !player.debugMode) {
+                            AudioManager.play("swoosh", 0.80f);
+                        }
+
+                        // ── FOOTSTEPS ─────────────────────────────────────────
+                        // Only while grounded, not submerged, and actually moving.
+                        // Surface type: sand/red-sand → walking_sand; sprint → running.
+                        float horizSpeedStep = (float) Math.sqrt(
+                                listenerVel.x * listenerVel.x + listenerVel.z * listenerVel.z);
+                        // Walking/running files are long loops — decide which one
+                        // should be playing this frame and switch loops on change.
+                        String wantedStep = null;
+                        if (player.isOnGround()
+                                && !player.isCameraSubmerged()
+                                && !player.debugMode
+                                && horizSpeedStep > 0.8f) {
+                            Block underFoot = world.getBlock(
+                                    (int)Math.floor(player.position.x),
+                                    (int)Math.floor(player.position.y) - 1,
+                                    (int)Math.floor(player.position.z));
+                            boolean sandy = (underFoot == Block.SAND
+                                         || underFoot == Block.RED_SAND);
+                            if (sandy)                  wantedStep = "walking_sand";
+                            else if (player.isSprinting()) wantedStep = "running";
+                            else                           wantedStep = "walking";
+                        }
+
+                        if (!java.util.Objects.equals(wantedStep, activeStepLoop)) {
+                            if (activeStepLoop != null)
+                                AudioManager.stopContinuous(activeStepLoop);
+                            if (wantedStep != null)
+                                AudioManager.playContinuous(wantedStep, 0.70f);
+                            activeStepLoop = wantedStep;
+                        }
 
                         // ── METEOR SPAWN: smash start → STAR_IRON falling from sky ──
                         // Detects the leading edge of isSmashing so the meteor only
                         // spawns once per smash, not every frame of the descent.
+                        // Only spawns on rocky/hard ground — looks wrong on sand/beach.
                         boolean nowSmashing = player.isSmashing();
                         if (nowSmashing && !wasSmashing) {
-                            // Spawn a glowing STAR_IRON block 100 blocks above the player,
-                            // falling at 1.5× smash speed — it arrives just before or as
-                            // the player hits the ground, reinforcing the meteor-impact feel.
-                            Vector3f meteorVel = new Vector3f(0f, -GameConfig.smashDescentSpeed * 1.5f, 0f);
-                            droppedItems.add(new DroppedItem(
-                                    (int)player.position.x,
-                                    (int)(player.position.y + 100),
-                                    (int)player.position.z,
-                                    Block.STAR_IRON,
-                                    meteorVel));
+                            Block groundBlock = world.getBlock(
+                                    (int)Math.floor(player.position.x),
+                                    (int)Math.floor(player.position.y) - 1,
+                                    (int)Math.floor(player.position.z));
+                            // Spawn only on stone-like surfaces (hardness ≥ 2.5 or gravel)
+                            boolean isRockyGround = groundBlock.hardness >= 2.5f
+                                    || groundBlock == Block.GRAVEL;
+                            if (isRockyGround) {
+                                Vector3f meteorVel = new Vector3f(0f, -GameConfig.smashDescentSpeed * 1.5f, 0f);
+                                droppedItems.add(new DroppedItem(
+                                        (int)player.position.x,
+                                        (int)(player.position.y + 100),
+                                        (int)player.position.z,
+                                        Block.STAR_IRON,
+                                        meteorVel));
+                            }
                         }
                         wasSmashing = nowSmashing;
 
@@ -1417,31 +1548,188 @@ public class Window {
                         }
                         lastMana = player.mana;
 
-                        // ── FLYING / WIND SOUNDS ──────────────────────────────
-                        // Detect air state: not on ground, not in a smash, no kamui
-                        float vy           = player.getVelocityY();
-                        boolean inAir      = !player.isOnGround();
-                        boolean isFalling  = inAir && vy < -8f;   // fast freefall
-                        boolean isAscending = inAir && vy > 4f;   // rocket / jump peak
+                        // ── LANDING / FALL IMPACT SOUNDS ──────────────────────
+                        // Detected from pre-update ground state vs post-update.
+                        // savedHighestY captured before player.update() so it
+                        // holds the peak Y — Player resets it to position.y on landing.
+                        boolean justLanded = wasOnGroundAudio == false && player.isOnGround();
+                        if (justLanded) {
+                            float fallDist = savedHighestY - player.position.y;
+                            // Check block directly below feet for surface type
+                            Block belowBlock = world.getBlock(
+                                    (int)Math.floor(player.position.x),
+                                    (int)Math.floor(player.position.y) - 1,
+                                    (int)Math.floor(player.position.z));
+                            boolean isSandy = (belowBlock == Block.SAND
+                                           || belowBlock == Block.RED_SAND);
+                            if (fallDist > 4.0f) {
+                                // Damage-range fall
+                                AudioManager.play(isSandy ? "fall_sandy" : "fall_hit", 0.85f);
+                            } else if (fallDist > 1.5f) {
+                                // Short drop / jump landing — light thud
+                                AudioManager.play(isSandy ? "fall_sandy" : "fall_light", 0.55f);
+                            }
+                        }
 
-                        // Horizontal speed from camera look delta isn't available directly,
-                        // so use a simple proxy: air + vy magnitude + not kamui/smash
-                        float airSpeedProxy = Math.abs(vy);
+                        // ── WATER SOUNDS ──────────────────────────────────────
+                        // Feet-level water check (same logic Player uses internally)
+                        boolean feetInWater = world.getBlock(
+                                (int)Math.floor(player.position.x),
+                                (int)Math.floor(player.position.y + 0.1f),
+                                (int)Math.floor(player.position.z)).isLiquid();
+                        boolean camSubmerged = player.isCameraSubmerged();
 
-                        if (isFalling) {
-                            // Fast descent: rising whoosh volume the faster you fall
-                            float fallVol = Math.min(1.0f, (Math.abs(vy) - 8f) / 12f); // 0 at -8, 1 at -20
-                            AudioManager.setContinuousVolume("wind_fall", fallVol);
-                            AudioManager.stopContinuous("wind_fly");
-                        } else if (inAir && airSpeedProxy > 2f) {
-                            // General air movement (ascending or horizontal glide)
-                            float flyVol = Math.min(1.0f, (airSpeedProxy - 2f) / 8f);
-                            AudioManager.setContinuousVolume("wind_fly", flyVol * 0.6f);
-                            AudioManager.stopContinuous("wind_fall");
+                        // Entry: big splash when falling fast, gentle enter otherwise
+                        if (feetInWater && !lastFeetInWater) {
+                            float entryVy = player.getVelocityY();
+                            if (entryVy < -12f) {
+                                AudioManager.play("water/water_splash", 1.0f);
+                            } else {
+                                AudioManager.play("water/water_enter", 0.7f);
+                            }
+                        }
+                        // Exit: pick randomly from 3 exit sounds — avoids the
+                        // repetitive "same splash every step" problem when walking on water.
+                        if (!feetInWater && lastFeetInWater) {
+                            int pick = (int)(Math.random() * 3);
+                            String exitSnd = pick == 0 ? "water/water_leave"
+                                           : pick == 1 ? "water/water_exit2"
+                                                       : "water/water_exit3";
+                            AudioManager.play(exitSnd, 0.50f);
+                        }
+                        // Underwater ambience: loop while camera is submerged
+                        if (camSubmerged && !lastCamSubmerged) {
+                            AudioManager.playContinuous("water/underwater_ambience", 0.55f);
+                        } else if (!camSubmerged && lastCamSubmerged) {
+                            AudioManager.stopContinuous("water/underwater_ambience");
+                        }
+                        lastFeetInWater  = feetInWater;
+                        lastCamSubmerged = camSubmerged;
+
+                        // ── WIND / FLIGHT SOUNDS ───────────────────────────────
+                        // Three beds that never actually stop — windFade smoothly
+                        // brings them to 0 so there are no abrupt pops on landing.
+                        //
+                        // KEY FIXES vs previous version:
+                        //  • inAir uses debugMode as override → touching blocks while
+                        //    skimming no longer briefly kills the wind.
+                        //  • When camSubmerged, windFade snaps to 0 immediately (water
+                        //    has its own sound design).
+                        //  • totalAirSpeed includes vertical so gentle rising/descending
+                        //    registers — not just horizontal glides.
+                        //  • wind_soft is ducked when wind_blow is strong.
+                        //  • Tilt pan: rolls the stereo image left/right with camera roll.
+                        float vy      = player.getVelocityY();
+                        // debugMode = flight mode: ALWAYS treat as in-air so brief block
+                        // grazes during skimming don't cut the wind.
+                        // Underground (cave env) also suppresses wind — windFade fades
+                        // out naturally when lastEnv switches to ENV_CAVE.
+                        boolean inAir = (player.debugMode || !player.isOnGround())
+                                        && !camSubmerged
+                                        && lastEnv != AudioManager.ENV_CAVE;
+
+                        // Snap wind off immediately on water entry — no lingering wind underwater.
+                        if (camSubmerged) windFade = 0f;
+
+                        float horizSpeed = (float) Math.sqrt(
+                                listenerVel.x * listenerVel.x + listenerVel.z * listenerVel.z);
+                        float totalAirSpeed = (float) Math.sqrt(
+                                horizSpeed * horizSpeed + vy * vy);
+
+                        // ── TUNING KNOBS ───────────────────────────────────────
+                        final float BLOW_START   = 3f;    // lower → wind starts earlier/gentler
+                        final float BIG_START    = 13f;   // lower → deep roar kicks in sooner
+                        final float BLOW_MAX_VOL = 0.70f;
+                        final float BIG_MAX_VOL  = 0.85f;
+                        final float SOFT_MAX_VOL = 0.20f;
+                        final float FADE_IN_SEC  = 0.12f; // faster fade-in for responsive feel
+                        final float FADE_OUT_SEC = 0.55f; // longer fade-out — wind lingers a beat
+
+                        if (inAir) {
+                            windFade = Math.min(1f, windFade + deltaTime / FADE_IN_SEC);
                         } else {
-                            // Grounded or slow air — silence both
-                            AudioManager.stopContinuous("wind_fall");
-                            AudioManager.stopContinuous("wind_fly");
+                            windFade = Math.max(0f, windFade - deltaTime / FADE_OUT_SEC);
+                        }
+
+                        // wind_blow: main travel layer
+                        float blowVol = Math.min(BLOW_MAX_VOL,
+                                Math.max(0f, (totalAirSpeed - BLOW_START) / (BIG_START - BLOW_START))
+                                * BLOW_MAX_VOL);
+
+                        // wind_big: deep roar at high speed
+                        float bigVol = Math.min(BIG_MAX_VOL,
+                                Math.max(0f, (totalAirSpeed - BIG_START) / 10f) * BIG_MAX_VOL);
+
+                        // wind_soft: gentle presence, ducked when blow is already loud
+                        float softFade = Math.max(0f, 1f - (blowVol / BLOW_MAX_VOL) * 2f);
+                        float softVol  = SOFT_MAX_VOL * softFade
+                                * Math.min(1f, Math.max(0f, (totalAirSpeed - 1.5f) / 4f));
+
+                        AudioManager.setContinuousVolume("wind/wind_soft", softVol * windFade);
+                        AudioManager.setContinuousVolume("wind/wind_blow", blowVol * windFade);
+                        AudioManager.setContinuousVolume("wind/wind_big",  bigVol  * windFade);
+
+                        // ── TILT PAN ───────────────────────────────────────────
+                        // When flying and rolling, shift wind_blow left/right to match
+                        // the direction you're banking into.
+                        // pan = sin(roll): +1 = hard right, -1 = hard left.
+                        // Only active during flight mode to avoid weird pan on normal jumps.
+                        if (player.debugMode) {
+                            float roll    = player.getCameraRoll();
+                            float tiltPan = (float) Math.sin(roll) * 0.75f;
+                            AudioManager.setLoopPan("wind/wind_blow", tiltPan);
+                            AudioManager.setLoopPan("wind/wind_big",  tiltPan * 0.5f);
+                        } else {
+                            // Return to centre when not in flight mode
+                            AudioManager.setLoopPan("wind/wind_blow", 0f);
+                            AudioManager.setLoopPan("wind/wind_big",  0f);
+                        }
+
+                        // wind_harsh stinger: fires only when windFade is mostly in
+                        windStingerCooldown -= deltaTime;
+                        if (windStingerCooldown <= 0f && inAir
+                                && totalAirSpeed > BLOW_START && windFade > 0.5f) {
+                            float sv = 0.25f + 0.30f * Math.min(1f, totalAirSpeed / (BIG_START + 4f));
+                            AudioManager.playVaried("wind/wind_harsh", Math.min(0.70f, sv), 0.10f);
+                            windStingerCooldown = 1.0f + (float)Math.random() * 2.5f
+                                    - Math.min(0.6f, totalAirSpeed / 40f);
+                        }
+
+                        // wind_cemetery: cave ambience stinger
+                        if (lastEnv == AudioManager.ENV_CAVE) {
+                            caveWindCooldown -= deltaTime;
+                            if (caveWindCooldown <= 0f) {
+                                AudioManager.play("wind/wind_cemetery", 0.35f);
+                                caveWindCooldown = 10f + (float)Math.random() * 14f;
+                            }
+                        }
+
+                        // ── MUFFLE (low-pass on the whole mix) ────────────────
+                        // Priority 1 — submerged: very heavy low-pass gives the
+                        //   沉闷 underwater feel.  Combined with ENV_UNDERWATER
+                        //   reverb, it sells the "thick water pressing on your ears"
+                        //   sensation.  Value 0..1 where 1 = fully muffled.
+                        // Priority 2 — fast air movement: lighter, speed-scaled cut.
+                        //
+                        // UNDERWATER_MUFFLE – raise toward 1 for heavier/deafer feel
+                        final float UNDERWATER_MUFFLE = 0.82f;
+                        final float MUFFLE_MAX        = 0.55f;
+
+                        float targetMuffle;
+                        if (camSubmerged) {
+                            // Hard cut on all high frequencies — deep, thick, pressured
+                            targetMuffle = UNDERWATER_MUFFLE;
+                        } else if (windFade > 0f) {
+                            targetMuffle = Math.min(MUFFLE_MAX,
+                                    Math.max(0f, (totalAirSpeed - BLOW_START) / 30f))
+                                    * windFade;
+                        } else {
+                            targetMuffle = 0f;
+                        }
+                        if (Math.abs(targetMuffle - lastMuffle) > 0.04f
+                                || (targetMuffle == 0f && lastMuffle != 0f)) {
+                            AudioManager.setListenerMuffle(targetMuffle);
+                            lastMuffle = targetMuffle;
                         }
 
                         // ── CONTEXTUAL ABILITY HINTS ──────────────────────────
@@ -1801,6 +2089,18 @@ public class Window {
                         (int) Math.floor(camera.position.z)).isLiquid();
                 shader.setUniform("isUnderwater", isCameraUnderwater ? 1 : 0);
                 shader.setUniform("cameraY", camera.position.y);
+
+                // ── SNOW BIOME ATMOSPHERE ─────────────────────────────────────
+                // Fades in as the player climbs into snow-mountain altitude.
+                // Suppressed underground (cave reverb env) and underwater.
+                float snowAtmStr = 0f;
+                if (!isCameraUnderwater && lastEnv != AudioManager.ENV_CAVE) {
+                    float altStart = GameConfig.snowAltitude - 60f;
+                    float altEnd   = GameConfig.snowAltitude;
+                    float snowT    = (camera.position.y - altStart) / (altEnd - altStart);
+                    snowAtmStr = Math.max(0f, Math.min(snowT, 1f)) * 0.18f;
+                }
+                shader.setUniform("snowAtmosphereStrength", snowAtmStr);
 
                 // ── TIME DILATION VIGNETTE ────────────────────────────────────
                 // Slow motion: subtle blue-grey wash
@@ -2514,8 +2814,6 @@ public class Window {
                     if (showHelp)        hud.renderHelpScreen((float)ww[0], (float)wh[0]);
                     // Screen flash overlay (snipe, explosion, melee hit, etc.)
                     ScreenEffectManager.INSTANCE.renderFlash(ww[0], wh[0]);
-                    // Animation editor (F8)
-                    hud.animEditor.render(deltaTime);
                 }
             }
 
@@ -2533,8 +2831,6 @@ public class Window {
         }
         for (Mesh m : itemMeshes.values()) m.cleanup();
         shader.cleanup();
-        hud.cleanup();
-        com.leaf.game.anim.ModelRenderer.cleanup();
         imguiGl3.dispose();
         noiseVis.cleanup();
         imguiGlfw.dispose();
@@ -2824,6 +3120,26 @@ public class Window {
     // ─────────────────────────────────────────────────────────────────────────
     //  Helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns true when there is at least one solid block directly above the
+     * player's head within {@code maxCheck} blocks. Used as a cheap "indoors /
+     * cave" test to decide whether to enable cave reverb.
+     *
+     * Tune: raise maxCheck to react to a higher ceiling; lower it so only
+     * tight spaces (narrow caves) trigger reverb. Default 12 feels like a
+     * low cave without being too eager on flat terrain with a single floating
+     * block overhead.
+     */
+    private boolean isUnderRoof(int maxCheck) {
+        int px = (int) Math.floor(player.position.x);
+        int py = (int) Math.floor(player.position.y) + 2;   // start just above head
+        int pz = (int) Math.floor(player.position.z);
+        for (int y = py; y < py + maxCheck; y++) {
+            if (world.getBlock(px, y, pz).isSolid()) return true;
+        }
+        return false;
+    }
 
     private boolean playerOccupies(int bx, int by, int bz) {
         float px = player.position.x, py = player.position.y, pz = player.position.z;
@@ -3314,39 +3630,80 @@ public class Window {
     }
 
     // ── BLOCK SOUND HELPERS ───────────────────────────────────────────────────
-    // Returns the sound name to play when placing a block, or null for silence.
-    // Add more cases as you add sound files. Each name needs a matching .wav in /audios/.
+    // Place and break use the same file per material (block_stone/soil/sand/crystal).
+    // Dig sounds fire periodically while holding the break key; crystals use a
+    // shuffled sequence of four clank notes instead of a single looped file.
+
     static String blockPlaceSound(Block b) {
         if (b == null) return null;
         return switch (b) {
             case STONE, ISLAND_STONE, FOSSIL_STONE, SCORCHED_STONE,
                  MEGALITH, MEGALITH_CARVED, MOSSY_MEGALITH,
-                 CRYSTAL_BASE, STAR_IRON                         -> "block_stone_place";
-            case DIRT, GRASS, MUD, ANCIENT_SOIL                  -> "block_dirt_place";
-            case OAK_LOG, OAK_LEAVES, PETRIFIED_WOOD,
-                 PETRIFIED_BARK, HANGING_ROOT                    -> "block_wood_place";
-            case SAND, RED_SAND, GRAVEL, SNOW                    -> "block_sand_place";
+                 CRYSTAL_BASE, STAR_IRON,
+                 OAK_LOG, OAK_LEAVES, PETRIFIED_WOOD,
+                 PETRIFIED_BARK, HANGING_ROOT                    -> "block_stone";
+            case DIRT, GRASS, MUD, ANCIENT_SOIL                  -> "block_soil";
+            case SAND, RED_SAND, GRAVEL, SNOW                    -> "block_sand";
             case CRYSTAL_AMETHYST, CRYSTAL_QUARTZ,
-                 CRYSTAL_CITRINE, CRYSTAL_ROSE                   -> "block_crystal_place";
-            default                                              -> "block_stone_place";
+                 CRYSTAL_CITRINE, CRYSTAL_ROSE                   -> "block_crystal";
+            default                                              -> "block_stone";
         };
     }
 
-    // Returns the sound name to play when breaking a block, or null for silence.
     static String blockBreakSound(Block b) {
         if (b == null) return null;
         return switch (b) {
             case STONE, ISLAND_STONE, FOSSIL_STONE, SCORCHED_STONE,
                  MEGALITH, MEGALITH_CARVED, MOSSY_MEGALITH,
-                 CRYSTAL_BASE, STAR_IRON                         -> "block_stone_break";
-            case DIRT, GRASS, MUD, ANCIENT_SOIL                  -> "block_dirt_break";
-            case OAK_LOG, OAK_LEAVES, PETRIFIED_WOOD,
-                 PETRIFIED_BARK, HANGING_ROOT                    -> "block_wood_break";
-            case SAND, RED_SAND, GRAVEL, SNOW                    -> "block_sand_break";
+                 CRYSTAL_BASE, STAR_IRON,
+                 OAK_LOG, OAK_LEAVES, PETRIFIED_WOOD,
+                 PETRIFIED_BARK, HANGING_ROOT                    -> "block_stone";
+            case DIRT, GRASS, MUD, ANCIENT_SOIL                  -> "block_soil";
+            case SAND, RED_SAND, GRAVEL, SNOW                    -> "block_sand";
             case CRYSTAL_AMETHYST, CRYSTAL_QUARTZ,
-                 CRYSTAL_CITRINE, CRYSTAL_ROSE                   -> "block_crystal_break";
-            default                                              -> "block_stone_break";
+                 CRYSTAL_CITRINE, CRYSTAL_ROSE                   -> "block_crystal";
+            default                                              -> "block_stone";
         };
+    }
+
+    /**
+     * Returns the dig sound to play while the player is actively breaking a block.
+     * Crystal returns the special sentinel {@code "crystal_clank_seq"} — the caller
+     * should call {@link #nextCrystalClank()} to get the actual shuffled sound name.
+     */
+    static String blockDigSound(Block b) {
+        if (b == null) return null;
+        return switch (b) {
+            case STONE, ISLAND_STONE, FOSSIL_STONE, SCORCHED_STONE,
+                 MEGALITH, MEGALITH_CARVED, MOSSY_MEGALITH,
+                 CRYSTAL_BASE, STAR_IRON,
+                 OAK_LOG, OAK_LEAVES, PETRIFIED_WOOD,
+                 PETRIFIED_BARK, HANGING_ROOT                    -> "stone_digging";
+            case DIRT, GRASS, MUD, ANCIENT_SOIL                  -> "soil_digging";
+            case SAND, RED_SAND, GRAVEL, SNOW                    -> "sand_digging";
+            case CRYSTAL_AMETHYST, CRYSTAL_QUARTZ,
+                 CRYSTAL_CITRINE, CRYSTAL_ROSE                   -> "crystal_clank_seq";
+            default                                              -> "stone_digging";
+        };
+    }
+
+    /**
+     * Returns the next crystal-clank sound name from a shuffled sequence.
+     * When the sequence is exhausted it reshuffles so consecutive plays never
+     * sound machine-gunned.
+     */
+    String nextCrystalClank() {
+        if (crystalClankIdx >= CRYSTAL_CLANKS.length) {
+            // Fisher-Yates shuffle
+            for (int i = CRYSTAL_CLANKS.length - 1; i > 0; i--) {
+                int j = (int)(Math.random() * (i + 1));
+                int tmp = crystalClankOrder[i];
+                crystalClankOrder[i] = crystalClankOrder[j];
+                crystalClankOrder[j] = tmp;
+            }
+            crystalClankIdx = 0;
+        }
+        return CRYSTAL_CLANKS[crystalClankOrder[crystalClankIdx++]];
     }
 
     private void updateRotatingRoomsPortal() {

@@ -27,6 +27,9 @@ uniform vec3  timeVignetteColor;
 uniform float overlayVignetteStrength;
 uniform vec3  overlayVignetteColor;
 
+// ── SNOW BIOME ATMOSPHERE ─────────────────────────────────────────────────────
+uniform float snowAtmosphereStrength;  // 0=none; driven by altitude in Window.java
+
 // ── SCREEN DESATURATION (ScreenEffectManager) ─────────────────────────────────
 uniform float desaturate;   // 0=colour, 1=greyscale
 
@@ -84,6 +87,12 @@ void main() {
         vec3  waterFogColor = vec3(0.05, 0.20, 0.55);
         gammaCorrected     = mix(gammaCorrected, waterFogColor,
                                  clamp(fogFactor + 0.3, 0.0, 1.0));
+    }
+
+    // ── SNOW BIOME ATMOSPHERE ─────────────────────────────────────────────────
+    if (snowAtmosphereStrength > 0.001) {
+        vec3 snowAtmColor = vec3(0.68, 0.82, 0.96);
+        gammaCorrected = mix(gammaCorrected, snowAtmColor, snowAtmosphereStrength);
     }
 
     // ── TIME SCALE VIGNETTE ───────────────────────────────────────────────────

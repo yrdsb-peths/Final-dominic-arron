@@ -24,15 +24,8 @@ import static org.lwjgl.opengl.GL11.*;
 class WindowHud {
 
     final Window win;
-    final com.leaf.game.anim.AnimEditor animEditor = new com.leaf.game.anim.AnimEditor();
 
     WindowHud(Window win) { this.win = win; }
-
-    /** Call once after the OpenGL context is ready. */
-    void init() { animEditor.init(); }
-
-    /** Call on shutdown. */
-    void cleanup() { animEditor.cleanup(); }
 
     void renderConnectionMenu(float w, float h) {
         ImGui.setNextWindowPos(w / 2.0f - 150.0f, h / 2.0f - 180.0f);
@@ -1521,21 +1514,42 @@ class WindowHud {
         int tx = win.lastTarget.hitX, ty = win.lastTarget.hitY, tz = win.lastTarget.hitZ;
         if (tx != win.breakX || ty != win.breakY || tz != win.breakZ) {
             win.breakProgress = 0.0f; win.breakX = tx; win.breakY = ty; win.breakZ = tz;
+            win.digSoundTimer  = 0f;   // reset interval so dig fires promptly on new target
+            win.digPreDelay    = 0f;   // reset pre-hold delay on new target (prevents misclick sounds)
         }
         Block target = win.world.getBlock(tx, ty, tz);
         if (!target.isSolid()) { win.breakProgress = 0.0f; return; }
 
         win.breakProgress += deltaTime / target.hardness;
 
+        // ── DIG SOUND (fires periodically while holding break key) ──────────
+        // Brief pre-hold delay (0.18 s) prevents accidental sounds from quick misclicks.
+        // After the delay, sound fires periodically scaled by block hardness.
+        final float DIG_START_DELAY = 0.18f;
+        win.digPreDelay += deltaTime;
+        if (win.digPreDelay >= DIG_START_DELAY) {
+            win.digSoundTimer -= deltaTime;
+            if (win.digSoundTimer <= 0f) {
+                String digSnd = Window.blockDigSound(target);
+                if ("crystal_clank_seq".equals(digSnd)) {
+                    digSnd = win.nextCrystalClank();   // shuffled note sequence
+                }
+                if (digSnd != null) AudioManager.playVaried(digSnd, 0.65f, 0.08f);
+                // Harder blocks = slightly slower dig interval
+                win.digSoundTimer = 0.30f + Math.min(0.20f, target.hardness * 0.08f);
+            }
+        }
+
         if (win.breakProgress >= 1.0f) {
             win.droppedItems.add(new DroppedItem(tx, ty, tz, target));
             win.world.setBlock(tx, ty, tz, Block.AIR);
             win.world.rebuildChunkAt(tx, ty, tz);
             if (win.network != null && win.network.connected) win.network.sendBreak(tx, ty, tz);
-            // Play a break sound based on block material
             String breakSnd = Window.blockBreakSound(target);
-            if (breakSnd != null) AudioManager.play(breakSnd);
+            if (breakSnd != null) AudioManager.playVaried(breakSnd, 0.85f, 0.07f);
             win.breakProgress = 0.0f;
+            win.digSoundTimer  = 0f;
+            win.digPreDelay    = 0f;
         }
     }
 

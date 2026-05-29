@@ -12,10 +12,13 @@ public class Inventory {
 
     // How many blocks the player starts with (so they can build immediately)
     public Inventory() {
-        items.put(Block.GRASS, 64);
-        items.put(Block.DIRT,  64);
-        items.put(Block.STONE, 64);
-        items.put(Block.WATER, 64);
+        items.put(Block.CRYSTAL_AMETHYST, 64);
+        items.put(Block.MEGALITH,  64);
+        items.put(Block.ANCIENT_MARROW, 64);
+        items.put(Block.ICE, 64);
+        items.put(Block.CRYSTAL_CITRINE, 64);
+        items.put(Block.CRYSTAL_ROSE, 64);
+        items.put(Block.CRATER_BLOOM, 64);
     }
 
     /** Add one block to the inventory. Called when a block is broken. */

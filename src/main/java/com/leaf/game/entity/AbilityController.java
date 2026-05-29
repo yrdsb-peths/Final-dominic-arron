@@ -220,7 +220,13 @@ public class AbilityController {
         if (isPillaring) {
             // Continuous mana drain while rising — cancel early if mana runs out
             player.mana = Math.max(0f, player.mana - GameConfig.manaPillarPerSec * dt);
-            if (!kHeld || (player.position.y - pillarStartPlayerY) > GameConfig.pillarMaxHeight || player.mana <= 0f) {
+            // Check if the ceiling directly above the player is blocked
+            int pcx = (int) Math.floor(player.position.x);
+            int pcz = (int) Math.floor(player.position.z);
+            int headY = (int) Math.floor(player.position.y) + 2;
+            boolean topBlocked = world.getBlock(pcx, headY, pcz).isSolid();
+            if (!kHeld || (player.position.y - pillarStartPlayerY) > GameConfig.pillarMaxHeight
+                    || player.mana <= 0f || topBlocked) {
                 isPillaring = false;
                 com.leaf.game.core.AudioManager.stopContinuous("stone_pillar"); // STOP RUMBLE
                 pillarCooldownTimer = GameConfig.pillarCooldown;
@@ -349,6 +355,7 @@ public class AbilityController {
         boolean lHeld = glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS;
         if (lHeld && healCooldownTimer <= 0f && !player.debugMode
                 && player.health < player.maxHealth
+                && player.mana > 0f
                 && healChannelTimer < GameConfig.healMaxDuration) {
             if (!isHealing) {
                 // Leading edge: fire the sound once and let it play to completion —
@@ -359,6 +366,8 @@ public class AbilityController {
             healChannelTimer += dt;
             float gain = GameConfig.healPerSecond * dt;
             player.health = Math.min(player.maxHealth, player.health + gain);
+            // Drain mana continuously while healing
+            player.mana = Math.max(0f, player.mana - GameConfig.manaHealPerSecond * dt);
             blendOverlay(new Vector3f(0.15f, 0.85f, 0.35f), 0.18f, dt);
         } else {
             if (isHealing || (healChannelTimer >= GameConfig.healMaxDuration && lHeld)) {

@@ -87,7 +87,7 @@ public class StandController {
     public  boolean  losStandToTarget = false;
 
     // ── Blocked-LOS warning flash ─────────────────────────────────────────────
-    private float    blockedFlashTimer = 0f;
+    float    blockedFlashTimer = 0f;  // package-private so AttackController can set it
 
     // ── Deploy / recall key edge detector ────────────────────────────────────
     private boolean  lastX            = false;
@@ -220,7 +220,11 @@ public class StandController {
                             .add(new Vector3f(toEnemy).mul(1.2f));
                     activeBolts.add(new StandBolt(startPos,
                             new Vector3f(toEnemy).mul(GameConfig.standShotSpeed)));
+                    com.leaf.game.core.AudioManager.play("snipe_redirect");
                     autoAimedThisFrame = true;
+                } else {
+                    // No visible target — flash blocked indicator so player knows
+                    blockedFlashTimer = GameConfig.standBlockedFlashTime;
                 }
             }
         }
@@ -290,9 +294,28 @@ public class StandController {
         float len = move.length();
         if (len > 0.01f) {
             move.div(len).mul(GameConfig.standSpeed * dt);
-            standPos.add(move);
-            // Clamp within world bounds
-            standPos.y = Math.max(1f, Math.min(Chunk.HEIGHT - 2f, standPos.y));
+
+            // Per-axis collision — drone cannot enter solid blocks
+            float nx = standPos.x + move.x;
+            if (!world.getBlock((int)Math.floor(nx),
+                                (int)Math.floor(standPos.y),
+                                (int)Math.floor(standPos.z)).isSolid()) {
+                standPos.x = nx;
+            }
+            float ny = Math.max(1f, Math.min(Chunk.HEIGHT - 2f, standPos.y + move.y));
+            if (!world.getBlock((int)Math.floor(standPos.x),
+                                (int)Math.floor(ny),
+                                (int)Math.floor(standPos.z)).isSolid()) {
+                standPos.y = ny;
+            } else {
+                standPos.y = Math.max(1f, Math.min(Chunk.HEIGHT - 2f, standPos.y));
+            }
+            float nz = standPos.z + move.z;
+            if (!world.getBlock((int)Math.floor(standPos.x),
+                                (int)Math.floor(standPos.y),
+                                (int)Math.floor(nz)).isSolid()) {
+                standPos.z = nz;
+            }
         }
     }
 
@@ -420,6 +443,7 @@ public class StandController {
         int   ri     = (int)Math.ceil(radius);
         Vector3f dir = new Vector3f(bolt.vel).normalize();
         int maxDeb   = 6, spawned = 0;
+        java.util.Set<com.leaf.game.world.Chunk> impactChunks = new java.util.HashSet<>();
 
         for (int dx = -ri; dx <= ri; dx++) {
             for (int dy = -ri; dy <= ri; dy++) {
@@ -430,6 +454,8 @@ public class StandController {
                     Block b = world.getBlock(bx, by, bz);
                     if (!b.isSolid()) continue;
                     world.setBlock(bx, by, bz, Block.AIR);
+                    com.leaf.game.world.Chunk ic = world.getChunk(Math.floorDiv(bx, Chunk.SIZE), Math.floorDiv(by, Chunk.HEIGHT), Math.floorDiv(bz, Chunk.SIZE));
+                    if (ic != null) impactChunks.add(ic);
                     if (spawned < maxDeb) {
                         float speed = 5f + (float)Math.random() * 8f;
                         Vector3f ejVel = new Vector3f(
@@ -445,6 +471,9 @@ public class StandController {
                 }
             }
         }
+        // Immediately rebuild affected chunks so no transparent-ghost frames appear
+        for (com.leaf.game.world.Chunk c : impactChunks) world.buildChunkMeshes(c);
+
         shakeRequest = Math.max(shakeRequest, 0.12f);
 
         // Emit explosion damage event — drained by Window into EnemyManager.

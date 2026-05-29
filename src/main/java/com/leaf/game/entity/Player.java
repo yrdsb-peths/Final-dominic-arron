@@ -27,7 +27,8 @@ public class Player {
 
     private float   velocityY  = 0.0f;
     private boolean onGround   = false;
-    private boolean wasInWater = false;
+    private boolean wasInWater     = false;
+    private boolean cameraSubmerged = false;  // true when the camera (eye level) is inside water
 
     private static final float WIDTH      = 0.6f;
     private static final float HEIGHT     = 1.8f;
@@ -134,6 +135,7 @@ public class Player {
 
         boolean isCameraInWater = isBlockLiquid(world,
                 camera.position.x, camera.position.y, camera.position.z);
+        cameraSubmerged = isCameraInWater;   // publish for audio reverb each update
         Vector3f forward = isCameraInWater ? camera.getLookDirection() : camera.getForward();
         Vector3f right   = camera.getRight();
 
@@ -371,7 +373,11 @@ public class Player {
     // AbilityController is in the same package so these stay package-visible.
     public float getVelocityY()   { return velocityY; }
     public void  setVelocityY(float v) { this.velocityY = v; }
-    public boolean isOnGround()   { return onGround; }
+    public boolean isOnGround()        { return onGround; }
+    /** True when the camera / eye position is inside a liquid block — used to trigger underwater reverb. */
+    public boolean isCameraSubmerged() { return cameraSubmerged; }
+    /** True while the player is sprinting (double-tap W). Used for footstep timing. */
+    public boolean isSprinting()       { return isSprinting; }
 
     private boolean isBlockLiquid(World world, float x, float y, float z) {
         return world.getBlock(

@@ -263,6 +263,8 @@ public class AttackController {
         com.leaf.game.core.AudioManager.play(Math.random() > 0.5 ? "slash1" : "slash2");
         com.leaf.game.core.ScreenEffectManager.INSTANCE.hitStop(2);
         com.leaf.game.core.ScreenEffectManager.INSTANCE.flashMeleeHit();
+        // Collect affected chunks for immediate rebuild (prevents transparent-ghost frames)
+        java.util.Set<Chunk> cleaveChunks = new java.util.HashSet<>();
         Vector3f lookVec  = new Vector3f();
         Vector3f rightVec = new Vector3f(camera.getRight());
         Vector3f upVec    = new Vector3f();
@@ -332,6 +334,8 @@ public class AttackController {
 
                     // Carve to AIR
                     world.setBlock(bx, by, bz, Block.AIR);
+                    Chunk cc = world.getChunk(Math.floorDiv(bx, Chunk.SIZE), Math.floorDiv(by, Chunk.HEIGHT), Math.floorDiv(bz, Chunk.SIZE));
+                    if (cc != null) cleaveChunks.add(cc);
 
                     // Eject debris along the actual direction of the strike
                     float speed = 12f + (float) Math.random() * 9f;
@@ -348,6 +352,8 @@ public class AttackController {
                 }
             }
         }
+        // Immediately rebuild all affected chunks so no transparent-ghost frames appear
+        for (Chunk c : cleaveChunks) world.buildChunkMeshes(c);
     }
 
     private boolean isMegalith(Block b) {
@@ -375,7 +381,8 @@ public class AttackController {
         }
 
         if (cHeld) {
-            if (!isCharging && !player.abilities.isAnyAbilityActive()) {
+            // Only start a fresh charge on the leading edge of C (not while holding through a cooldown)
+            if (!isCharging && !lastC && !player.abilities.isAnyAbilityActive()) {
                 isCharging = true;
                 chargeTime = 0f;
                 com.leaf.game.core.AudioManager.playContinuous("snipe_loadgun"); // START CHARGE SOUND
@@ -405,19 +412,34 @@ public class AttackController {
 
     private void fireBolt(Camera camera, World world, float chargeF) {
         float speed = GameConfig.voidShardMinSpeed + chargeF * (GameConfig.voidShardMaxSpeed - GameConfig.voidShardMinSpeed);
-        com.leaf.game.core.AudioManager.play(Math.random() > 0.5 ? "snipe1" : "snipe2");
-        // 1. If piloting the drone -> Fire from the drone!
+        // 1. If piloting the drone -> Fire from the drone, with line-of-fire check
         if (player.stand.isInStandPerspective()) {
-            Vector3f dir = camera.getLookDirection();
+            Vector3f dir   = camera.getLookDirection();
             Vector3f start = new Vector3f(camera.position).add(new Vector3f(dir).mul(1.4f));
+
+            // Line-of-fire check: is there a clear path at least 1 block in front?
+            // Prevents firing through walls when the drone is pushed against solid terrain.
+            Vector3f probePos = new Vector3f(start).add(new Vector3f(dir).mul(1.0f));
+            int pbx = (int)Math.floor(probePos.x), pby = (int)Math.floor(probePos.y), pbz = (int)Math.floor(probePos.z);
+            if (pby >= 0 && pby < com.leaf.game.world.Chunk.HEIGHT
+                    && world.getBlock(pbx, pby, pbz).isSolid()) {
+                // Wall directly in front — abort, play blocked indicator
+                player.stand.blockedFlashTimer = GameConfig.standBlockedFlashTime;
+                return;
+            }
+
             ActiveBolt bolt = new ActiveBolt(start, new Vector3f(dir).mul(speed), chargeF);
             bolt.redirected = true; // Prevents it from colliding with the drone it just fired from
             activeBolts.add(bolt);
+            // Play the redirect/transfer sound for stand-perspective shots
+            com.leaf.game.core.AudioManager.play("snipe_redirect");
 
             overlayColor.set(0.75f, 0.40f, 1.0f);
             overlayStrength = 0f;
             return;
         }
+
+        com.leaf.game.core.AudioManager.play(Math.random() > 0.5 ? "snipe1" : "snipe2");
 
         // 2. Player shooting AT the drone -> Homing missile to the drone!
         if (player.stand.isDeployed() && isAimingAtStand(camera)) {
@@ -562,6 +584,7 @@ public class AttackController {
         Vector3f boltDir   = new Vector3f(bolt.vel).normalize();
         int      maxDebris = 8 + (int) (bolt.chargeF * 7f);
         int      spawned   = 0;
+        java.util.Set<Chunk> impactChunks = new java.util.HashSet<>();
 
         for (int dx = -ri; dx <= ri; dx++) {
             for (int dy = -ri; dy <= ri; dy++) {
@@ -572,6 +595,8 @@ public class AttackController {
                     if (!b.isSolid()) continue;
 
                     world.setBlock(bx, by, bz, Block.AIR);
+                    Chunk ic = world.getChunk(Math.floorDiv(bx, Chunk.SIZE), Math.floorDiv(by, Chunk.HEIGHT), Math.floorDiv(bz, Chunk.SIZE));
+                    if (ic != null) impactChunks.add(ic);
 
                     if (spawned < maxDebris) {
                         float speed = 4f + (float) Math.random() * 9f * (0.5f + bolt.chargeF * 0.5f);
@@ -591,6 +616,9 @@ public class AttackController {
                 }
             }
         }
+
+        // Immediately rebuild all affected chunks so no transparent-ghost frames appear
+        for (Chunk c : impactChunks) world.buildChunkMeshes(c);
 
         // Emit explosion damage event — drained by Window into EnemyManager.
         // Damage scales linearly with charge: min at 0, max at full charge.
