@@ -215,6 +215,8 @@ public class World {
             // Never evict a chunk that is still being generated — the background
             // thread holds a reference and will write to it after this point.
             if (c.state == Chunk.ChunkState.GENERATING) continue;
+            // Never evict chunks flagged as hand-built structures.
+            if (c.noEvict) continue;
 
             // Check Manhattan distance per axis.
             boolean outsideX = Math.abs(c.cx - playerCX) > keepRadius;

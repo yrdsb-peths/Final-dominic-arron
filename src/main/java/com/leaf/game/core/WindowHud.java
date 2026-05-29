@@ -1408,6 +1408,8 @@ class WindowHud {
         helpRow("[ESC]",                "Open the pause menu.");
         helpRow("[F1]",                 "This screen.");
         helpRow("[F3]",                 "Debug overlay (position, FPS, time scale, render distance).");
+        helpRow("[F5]",                 "Non-Euclidean: 'Bigger on the Inside' tunnel. Teleports you to a short 5-block archway. Step through it to enter a 50-block interior tunnel — impossible geometry via FBO portal rendering.");
+        helpRow("[F6]",                 "Non-Euclidean: 'Rotating Rooms'. Teleports you to a 6-room cycle. Walk through identical-looking doorways — two are hidden portals that loop you back to the start.");
         ImGui.spacing();
 
         // ── MANA & COOLDOWNS ──────────────────────────────────────────────────

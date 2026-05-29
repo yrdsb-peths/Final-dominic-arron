@@ -10,6 +10,8 @@ public class Chunk {
     public Mesh transparentMesh;
     public boolean dirty;
     public boolean meshBuilt = false;
+    /** If true this chunk is never evicted by updateChunks (used for hand-built structures). */
+    public boolean noEvict = false;
 
     /**
      * Tight Y bounds of non-AIR blocks in this chunk (local coords).
