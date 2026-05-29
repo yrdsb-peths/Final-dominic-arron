@@ -50,6 +50,26 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
+// ── Animation preview sandbox ─────────────────────────────────────────────────
+//   ./gradlew preview                       (default model: enemy_basic)
+//   ./gradlew preview --args="monster.bbmodel"
+def isMac = System.getProperty('os.name').toLowerCase().contains('mac')
+
+tasks.register('preview', JavaExec) {
+    group = 'application'
+    description = 'Launch the standalone animation preview sandbox.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.leaf.game.anim.AnimPreview'
+    if (isMac) jvmArgs '-XstartOnFirstThread'   // GLFW must own the first thread on macOS
+}
+
+tasks.register('bbconvert', JavaExec) {
+    group = 'application'
+    description = 'Convert a .bbmodel to an AnimModel json. Usage: --args="in.bbmodel [out.json]"'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.leaf.game.anim.BlockbenchImporter'
+}
+
 // ── Fat JAR — single file that runs everywhere ────────────────────────────────
 shadowJar {
     archiveBaseName    = 'game'

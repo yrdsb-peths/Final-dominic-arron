@@ -35,6 +35,8 @@ public class FlightController {
 
     private final Vector3f launchVelocity = new Vector3f();
     public  Vector3f getLaunchVelocity()  { return new Vector3f(launchVelocity); }
+    /** Current flight velocity — use for wind calculations to avoid stutter when terrain blocks movement. */
+    public  float    getFlightSpeed()     { return velocity.length(); }
 
     public FlightController(Player player) {
         this.player = player;

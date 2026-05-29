@@ -299,9 +299,10 @@ public class GameConfig {
     public static float substituteCooldown     = 10.0f; // seconds between activations
 
     // ── HEALING (Hold L) ──────────────────────────────────────────────────────
-    public static float healPerSecond   = 15.0f;  // HP restored per second while holding
-    public static float healCooldown    = 4.0f;   // Seconds before you can heal again after stopping
-    public static float healMaxDuration = 3.5f;   // Max continuous seconds before forced cooldown
+    public static float healPerSecond      = 15.0f;  // HP restored per second while holding
+    public static float manaHealPerSecond  = 50.0f;   // Mana drained per second while healing
+    public static float healCooldown       = 4.0f;   // Seconds before you can heal again after stopping
+    public static float healMaxDuration    = 3.5f;   // Max continuous seconds before forced cooldown
 
     // ── KAMUI (Z toggle) ─────────────────────────────────────────────────────
     /** Seconds the player can stay phased before being forced out. */

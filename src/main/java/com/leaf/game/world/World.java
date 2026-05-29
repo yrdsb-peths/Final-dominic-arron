@@ -596,11 +596,18 @@ public class World {
             buildChunkMeshes(c);
         }
 
-        // Trigger fluid updates on the crater rim so exposed water can flow
+        // Trigger fluid updates on the entire crater shell so any exposed water
+        // at any Y level inside the sphere can flow. Previously only the top and
+        // bottom horizontal rings were scheduled, which missed water at mid-levels.
         for (int dx = -(radius+1); dx <= radius+1; dx++) {
-            for (int dz = -(radius+1); dz <= radius+1; dz++) {
-                scheduleFluidUpdate(wx + dx, wy, wz + dz);
-                scheduleFluidUpdate(wx + dx, wy + radius, wz + dz);
+            for (int dy = -(radius+1); dy <= radius+1; dy++) {
+                for (int dz = -(radius+1); dz <= radius+1; dz++) {
+                    // Only schedule the outer shell (one block outside crater)
+                    float shellDist = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    if (shellDist <= radius + 1.5f) {
+                        scheduleFluidUpdate(wx + dx, wy + dy, wz + dz);
+                    }
+                }
             }
         }
     }
