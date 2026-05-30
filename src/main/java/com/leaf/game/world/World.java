@@ -38,6 +38,11 @@ public class World {
     private static final int MAX_CONCURRENT_GENERATIONS = 12;
     private final AtomicInteger activeGenerations = new AtomicInteger(0);
 
+    // Cached nearest-first chunk offset ring (see updateChunks). Rebuilt only when
+    // the render distance changes, so updateChunks allocates nothing per frame.
+    private List<int[]> cachedColumnOffsets = null;
+    private int         cachedColumnRD      = -1;
+
     public World() {}
 
     public Map<Long, Map<Integer, Block>> getModifiedBlocksMap() { return modifiedBlocks; }
@@ -165,14 +170,23 @@ public class World {
         // chunks the player can actually see rather than chunks on the far edge
         // of the render ring — eliminating the "empty terrain holes nearby while
         // distant chunks load" symptom.
-        int totalDiameter = 2 * RENDER_DISTANCE + 1;
-        List<int[]> columnOffsets = new ArrayList<>(totalDiameter * totalDiameter);
-        for (int dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-            for (int dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
-                columnOffsets.add(new int[]{dx, dz, dx * dx + dz * dz});
+        // The (dx,dz) offset ring sorted nearest-first depends only on the render
+        // distance, so build it once and reuse it every frame. Rebuilding + sorting
+        // ~625 int[] objects per frame (RD=12) was needless allocation churn that
+        // fed GC stutter during movement.
+        List<int[]> columnOffsets = cachedColumnOffsets;
+        if (columnOffsets == null || cachedColumnRD != RENDER_DISTANCE) {
+            int totalDiameter = 2 * RENDER_DISTANCE + 1;
+            columnOffsets = new ArrayList<>(totalDiameter * totalDiameter);
+            for (int dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
+                for (int dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+                    columnOffsets.add(new int[]{dx, dz, dx * dx + dz * dz});
+                }
             }
+            columnOffsets.sort(Comparator.comparingInt(e -> e[2]));
+            cachedColumnOffsets = columnOffsets;
+            cachedColumnRD      = RENDER_DISTANCE;
         }
-        columnOffsets.sort(Comparator.comparingInt(e -> e[2]));
 
         for (int[] col : columnOffsets) {
             int dx = col[0], dz = col[1];

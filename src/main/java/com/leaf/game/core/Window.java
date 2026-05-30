@@ -722,7 +722,16 @@ public class Window {
                 // (each buildChunkMeshes call is ~0.5–1 ms on average hardware).
                 boolean cannonActive = player.abilities.isCannonballing
                         || player.abilities.isCharging();
-                int maxMeshesPerFrame = isPreloading ? 24 : cannonActive ? 20 : 4;
+                int maxMeshesPerFrame = isPreloading ? 24 : cannonActive ? 20 : 8;
+                // Per-frame wall-clock budget for mesh building. Each build also
+                // issues a blocking glBufferData upload, so a burst of them (fast
+                // movement / cannonball, when many chunks arrive at once) blows
+                // the frame and shows as a lag spike. Cap the time spent here and
+                // let leftover chunks mesh next frame — terrain pops in over a few
+                // frames instead of stalling one. While preloading the player is
+                // frozen at spawn, so spikes are invisible; let it run uncapped.
+                long meshBudgetNanos = 4_000_000L; // ~4 ms
+                long meshStartNanos  = System.nanoTime();
                 int meshedThisFrame = 0;
                 Chunk readyChunk;
                 while (meshedThisFrame < maxMeshesPerFrame
@@ -730,6 +739,8 @@ public class Window {
                     world.buildChunkMeshes(readyChunk);
                     readyChunk.state = Chunk.ChunkState.MESHED;
                     meshedThisFrame++;
+                    if (!isPreloading
+                            && (System.nanoTime() - meshStartNanos) > meshBudgetNanos) break;
                 }
 
                 // ── PREVENT FALLING THROUGH WORLD ─────────────────────────────

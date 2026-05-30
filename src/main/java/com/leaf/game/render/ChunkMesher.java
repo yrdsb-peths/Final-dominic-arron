@@ -42,6 +42,16 @@ public class ChunkMesher {
     private static final GrowableFloats tVertsBuf = new GrowableFloats(16384);
     private static final GrowableInts   tIdxBuf   = new GrowableInts(8192);
 
+    // Reusable neighbour caches (18×(HEIGHT+2)×18). Allocating these fresh on
+    // every buildChunkMeshes call churned ~9k small arrays per mesh — at 20+
+    // meshes/frame during flight that GC pressure caused visible stutter.
+    // Reused because meshing is single-threaded (main/GL thread) and never
+    // re-entrant. Only the active Y-band is repopulated each call; cells outside
+    // it hold stale data but are never read (mesh + AO + liquid lookups stay
+    // within [yMin-1 .. yMax+2]).
+    private static final Block[][][] blockCacheBuf = new Block[18][Chunk.HEIGHT + 2][18];
+    private static final byte[][][]  metaCacheBuf  = new byte[18][Chunk.HEIGHT + 2][18];
+
     // --- FILE: ./main/java/com/leaf/game/render/ChunkMesher.java ---
 // (Replace buildChunkMeshes and addFace with these updated versions)
 
@@ -53,9 +63,26 @@ public class ChunkMesher {
         int worldZStart = chunk.cz * Chunk.SIZE;
         int worldYStart = chunk.cy * Chunk.HEIGHT;
 
+        // ── Empty-chunk fast path (before any cache work) ──
+        if (chunk.minBlockY > chunk.maxBlockY) {
+            if (chunk.opaqueMesh      != null) { chunk.opaqueMesh.cleanup();      chunk.opaqueMesh = null; }
+            if (chunk.transparentMesh != null) { chunk.transparentMesh.cleanup(); chunk.transparentMesh = null; }
+            chunk.dirty = false;
+            return;
+        }
+
         // ── 1. POPULATE LOCAL BLOCKS & META CACHE (Eliminates HashMap Lookups) ──
-        Block[][][] blockCache = new Block[18][Chunk.HEIGHT + 2][18];
-        byte[][][]  metaCache  = new byte[18][Chunk.HEIGHT + 2][18];
+        // Only the Y-band the mesh loop touches is populated. The mesh loop runs
+        // over [yMin..yMax]; AO/liquid lookups reach one below and two above, so
+        // the cache must cover [yMin-1 .. yMax+2] (cache-index space). We widen
+        // by an extra block each side for safety and clamp to [-1 .. HEIGHT].
+        int yMin = Math.max(0,              chunk.minBlockY - 1);
+        int yMax = Math.min(Chunk.HEIGHT-1, chunk.maxBlockY + 1);
+        int pyMin = Math.max(-1,          yMin - 2);
+        int pyMax = Math.min(Chunk.HEIGHT, yMax + 2);
+
+        final Block[][][] blockCache = blockCacheBuf;
+        final byte[][][]  metaCache  = metaCacheBuf;
 
         Chunk center = chunk;
         int cy_ = chunk.cy;
@@ -76,7 +103,7 @@ public class ChunkMesher {
                 int lx = (x < 0) ? 15 : (x >= 16 ? 0 : x);
                 int lz = (z < 0) ? 15 : (z >= 16 ? 0 : z);
 
-                for (int y = -1; y <= Chunk.HEIGHT; y++) {
+                for (int y = pyMin; y <= pyMax; y++) {
                     Block b = Block.AIR;
                     byte  m = 0;
 
@@ -102,14 +129,6 @@ public class ChunkMesher {
         }
 
         // ── 2. MESH GENERATION LOOP ──
-        int yMin = Math.max(0,              chunk.minBlockY - 1);
-        int yMax = Math.min(Chunk.HEIGHT-1, chunk.maxBlockY + 1);
-        if (chunk.minBlockY > chunk.maxBlockY) {
-            if (chunk.opaqueMesh      != null) { chunk.opaqueMesh.cleanup();      chunk.opaqueMesh = null; }
-            if (chunk.transparentMesh != null) { chunk.transparentMesh.cleanup(); chunk.transparentMesh = null; }
-            chunk.dirty = false;
-            return;
-        }
         for (int x = 0; x < Chunk.SIZE;  x++) {
             for (int y = yMin; y <= yMax; y++) {
                 for (int z = 0; z < Chunk.SIZE;  z++) {
