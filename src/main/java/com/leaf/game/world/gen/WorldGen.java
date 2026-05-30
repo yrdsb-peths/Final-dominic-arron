@@ -32,6 +32,9 @@ public class WorldGen {
     // ── Surface Feature Generator ──
     private FeatureGenerator features;
 
+    // ── Ridge detail noise: carves multiple sub-peaks + valleys inside the envelope ──
+    private Noise ridgeNoise;
+
     // ── The Mountain Math ──
     private ErodedFbmGenerator eroFbm;
     private BlockCladder       cladder;
@@ -73,6 +76,7 @@ public class WorldGen {
         spagNoise2      = new Noise(seed + 9000L);
         biomeJitter     = new Noise(seed + 10000L);
         mountainMask    = new Noise(seed + 30000L);
+        ridgeNoise      = new Noise(seed + 77777L); // sub-peak ridge structure
 
         // Single, clean initialization
         abyss           = new AbyssGenerator(seed);
@@ -434,9 +438,35 @@ public class WorldGen {
         float mountainSpawnThreshold = 0.22f;
 
         if (c > 0.05f && mMask > mountainSpawnThreshold) {
-            float[] ero = eroFbm.sampleFull(wx, wz);
-            float fbmH  = ero[0];
-            fbmSlope    = ero[1];
+            // ── LAYER 1: Large-scale ENVELOPE (smooth FBM, ~1200-block features) ──
+            // Defines WHERE the mountain zone is and what its absolute height ceiling is.
+            // This is a gentle dome — it does NOT create the interesting shapes by itself.
+            float[] ero  = eroFbm.sampleFull(wx, wz);
+            float envelope = ero[0];    // smooth [0,1] — where the mountain is tall
+            fbmSlope       = ero[1];    // slope of the broad envelope
+
+            // ── LAYER 2: RIDGE DETAIL (ridged noise, ~250-block period) ──
+            // ridgedOctave gives 0 in valleys, 1 at sharp ridgelines.
+            // At freq 0.0038, a mountain zone ~1200 blocks wide has 4–5 ridges —
+            // each one a crest you climb over, with valleys you can skim through between.
+            float ridge = ridgeNoise.ridgedOctave(
+                    (wx + seedOffX) * 0.0038f,
+                    (wz + seedOffZ) * 0.0038f,
+                    4, 0.52f
+            );
+
+            // ── COMBINE: envelope × (valley floor + ridge contribution) ──
+            // Valley floor: 35% of envelope height → ~y390 near a major peak.
+            // Ridge peaks:  100% of envelope height → full summit height.
+            // Result: you traverse 3-5 ridges of increasing height to reach the summit,
+            // with real valleys between them that reward exploration and skim-flying.
+            float mountainH = envelope * (0.35f + 0.65f * ridge);
+
+            // ── SLOPE: ridge flanks (where ridge changes fastest) read as bare rock ──
+            // 4·r·(1−r) peaks at r=0.5 (the steep flank between valley and ridgeline).
+            // This makes ridge sides rocky while ridgetops and valleys stay snow-covered.
+            float ridgeFlank = 4f * ridge * (1f - ridge);
+            fbmSlope = fbmSlope + ridgeFlank * 0.62f;
 
             float blend = (mMask - mountainSpawnThreshold) / (1f - mountainSpawnThreshold);
             blend = Math.max(0f, Math.min(1f, blend));
@@ -445,7 +475,7 @@ public class WorldGen {
             float coastFade = Math.max(0f, Math.min(1f, (c - 0.05f) / 0.15f));
             blend *= coastFade;
 
-            float massiveY = GameConfig.seaLevel + 5f + (fbmH * GameConfig.mountainPeakAmplitude);
+            float massiveY = GameConfig.seaLevel + 5f + mountainH * GameConfig.mountainPeakAmplitude;
             targetY = lerp(targetY, massiveY, blend);
 
             if (blend > 0.05f) isAlpine = true;
