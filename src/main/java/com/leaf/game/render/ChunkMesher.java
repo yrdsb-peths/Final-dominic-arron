@@ -11,6 +11,20 @@ public class ChunkMesher {
 
     private static final float AO_STRENGTH = 0.2f;
 
+    // Per-block brightness jitter to break up the "uniform grid" look when many
+    // identical blocks tile together. Each block gets one deterministic shade in
+    // [1-SHADE_AMP, 1] applied to all 6 faces, so a field of stone reads as varied
+    // rock instead of a repeating texture. 0 disables it; raise for more contrast.
+    private static final float SHADE_AMP = 0.14f;
+
+    /** Deterministic per-block brightness multiplier in [1-SHADE_AMP, 1]. */
+    private static float blockShade(int wx, int wy, int wz) {
+        int h = (wx * 73856093) ^ (wy * 19349663) ^ (wz * 83492791);
+        h = (h ^ (h >>> 13)) * 1274126177;
+        float f = ((h >>> 8) & 0xFFFF) / 65535f;   // [0,1]
+        return 1.0f - SHADE_AMP * f;                // [1-SHADE_AMP, 1]
+    }
+
     // ── Primitive growable buffers ─────────────────────────────────────────────
     // These are reused across every buildChunkMeshes call (main thread only).
     // Eliminates millions of Float/Integer autobox allocations per second.
@@ -244,20 +258,22 @@ public class ChunkMesher {
 
         int faceIndex = block.getFaceIndex(nx, ny, nz);
 
-        // 1. SIDE SHUFFLING: If it's a side face (2=front, 3=back, 4=right, 5=left),
-        //    use a deterministic hash of the block's world coordinates to rotate
-        //    which face on your unwrap is shown.
-        if (faceIndex >= 2 && faceIndex <= 5) {
-            int offset = (wx * 23 + wy * 31 + wz * 13) & 3; // returns positive [0, 3]
+        // 1. SIDE SHUFFLING — disabled for seamless/directional blocks.
+        //    Shuffling shows a different cube-net face on a side wall, which breaks
+        //    seam continuity for seamless tiles and shows the wrong face for
+        //    directional ones (e.g. grass-top art appearing on a side wall).
+        if (!block.seamless && faceIndex >= 2 && faceIndex <= 5) {
+            int offset = (wx * 23 + wy * 31 + wz * 13) & 3;
             faceIndex = 2 + ((faceIndex - 2 + offset) & 3);
         }
 
         float[] uv = BlockTextureAtlas.getUV(block.texName, faceIndex);
         float uMin = uv[0], vMin = uv[1], uMax = uv[2], vMax = uv[3];
 
-        // 2. UV ROTATION: Deterministically rotate the UV corner assignments by
-        //    0, 90, 180, or 270 degrees on a per-block basis.
-        int rot = (wx * 11 + wy * 13 + wz * 17) & 3; // returns positive [0, 3]
+        // 2. UV ROTATION — disabled for seamless/directional blocks.
+        //    Rotating a seamless tile breaks its edge match with non-rotated neighbours.
+        //    Rotating a directional face (grass stripe, bark) puts it sideways or upside down.
+        int rot = block.seamless ? 0 : (wx * 11 + wy * 13 + wz * 17) & 3;
 
         float[] baseUs = { uMin, uMax, uMax, uMin };
         float[] baseVs = { vMin, vMin, vMax, vMax };
@@ -274,13 +290,16 @@ public class ChunkMesher {
             vs[i] = baseVs[srcIdx];
         }
 
+        // One shade for the whole block so all 6 faces match (a block is one rock).
+        float shade = blockShade(wx, wy, wz);
+
         for (int i = 0; i < 4; i++) {
             verts.add(faceVertices[i * 3]);
             verts.add(faceVertices[i * 3 + 1]);
             verts.add(faceVertices[i * 3 + 2]);
-            verts.add(block.r * ao[i]);
-            verts.add(block.g * ao[i]);
-            verts.add(block.b * ao[i]);
+            verts.add(block.r * ao[i] * shade);
+            verts.add(block.g * ao[i] * shade);
+            verts.add(block.b * ao[i] * shade);
             verts.add(block.a);
             verts.add(nx); verts.add(ny); verts.add(nz);
             verts.add(us[i]);

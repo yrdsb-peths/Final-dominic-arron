@@ -543,6 +543,12 @@ public class Window {
     }
 
     private void loop() {
+        // ── MAC OS CRASH FIX ──────────────────────────────────────────────
+        // Flush the window creation events and give macOS 150ms to finish
+        // building the native window chrome before we slam the CPU with threads.
+        glfwPollEvents();
+        try { Thread.sleep(150); } catch (InterruptedException e) {}
+        // ──────────────────────────────────────────────────────────────────
         int[] ww = new int[1], wh = new int[1];
         glfwGetWindowSize(window, ww, wh);
         glfwGetFramebufferSize(window, fw, fh);
@@ -601,11 +607,11 @@ public class Window {
         // Warm up the JVM audio mixer so the very first play() call has no delay,
         // then decode every sound file once into heap memory.  Playback from this
         // point on is pure memory copy — no classpath IO, no thread-creation cost.
-        AudioManager.warmup();
+        //AudioManager.warmup();
         com.leaf.game.render.BlockTextureAtlas.load();
         // Subtle Doppler — enough to feel projectiles/wind pass by without the
         // cartoonish over-pitch a factor of 1.0 produces.
-        AudioManager.setDopplerFactor(0.7f);
+        /**AudioManager.setDopplerFactor(0.7f);
         for (String snd : new String[]{
                 // Kamui
                 "kamui_enter", "kamui_exit", "kamui_duration", "kamui_distortion",
@@ -641,8 +647,9 @@ public class Window {
                 "stone_digging", "soil_digging", "sand_digging",
                 "crystal_clank1", "cystal_clank2", "crystal_clank3", "crystal_clank4",
                 // (block sounds now live under "block_stone/soil/sand/crystal" — see preload above)
-        }) { AudioManager.preload(snd); }
-
+        }) { //AudioManager.preload(snd);
+            }
+        **/
         // ── SPAWN POINT ────────────────────────────────────────────────────────
         // Spawn at (777, 250, 777): these coordinates produce non-integer noise
         // inputs at every frequency used by the terrain samplers, ensuring the

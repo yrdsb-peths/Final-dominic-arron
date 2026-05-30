@@ -60,12 +60,9 @@ tasks.register('run', JavaExec) {
     description = 'Launch the game.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.leaf.game.Main'
-    if (isMac) jvmArgs '-XstartOnFirstThread'   // GLFW must own the first thread on macOS
-    // JOML 1.10.5 ships major-version-46 (Java 1.2) bytecode, which routes through
-    // HotSpot's legacy inference verifier. That verifier null-derefs (SIGSEGV in
-    // _platform_strlen) on Temurin 25 / macOS aarch64. The bytecode is valid; the
-    // verifier is buggy — so skip verification for these trusted bundled libs.
-    jvmArgs '-Xverify:none'
+    if (isMac) jvmArgs '-XstartOnFirstThread'
+    // Added the native-access flag here cleanly:
+    jvmArgs '-Xverify:none', '--enable-native-access=ALL-UNNAMED'
 }
 
 tasks.register('preview', JavaExec) {
@@ -73,10 +70,10 @@ tasks.register('preview', JavaExec) {
     description = 'Launch the standalone animation preview sandbox.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.leaf.game.anim.AnimPreview'
-    if (isMac) jvmArgs '-XstartOnFirstThread'   // GLFW must own the first thread on macOS
-    jvmArgs '-Xverify:none'                      // same JOML verifier workaround as run
+    if (isMac) jvmArgs '-XstartOnFirstThread'
+    // Added the native-access flag here cleanly:
+    jvmArgs '-Xverify:none', '--enable-native-access=ALL-UNNAMED'
 }
-
 tasks.register('bbconvert', JavaExec) {
     group = 'application'
     description = 'Convert a .bbmodel to an AnimModel json. Usage: --args="in.bbmodel [out.json]"'
