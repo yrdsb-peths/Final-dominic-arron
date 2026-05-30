@@ -38,6 +38,10 @@ public class World {
     private static final int MAX_CONCURRENT_GENERATIONS = 12;
     private final AtomicInteger activeGenerations = new AtomicInteger(0);
 
+    // Highest sky slab a mountain may occupy (cy=4 → worldY up to 2559).
+    // Matches the cy>4 guard in setBlockWithMeta.
+    private static final int MAX_SKY_CY = 4;
+
     // Cached nearest-first chunk offset ring (see updateChunks). Rebuilt only when
     // the render distance changes, so updateChunks allocates nothing per frame.
     private List<int[]> cachedColumnOffsets = null;
@@ -195,6 +199,22 @@ public class World {
 
             // Always load the surface chunk (cy=0)
             loadChunkIfNeeded(world, gen, cx, 0, cz);
+
+            // ── Sky-piercing mountains: spawn cy≥1 slabs over tall columns ──
+            // Reuse the surface chunk's measured peak height (computed during
+            // its own generation) so this adds ZERO extra noise sampling per
+            // frame. Only columns whose mountains exceed y512 ever request a
+            // sky slab, so flat/ocean terrain pays nothing.
+            Chunk surfaceChunk = world.getChunk(cx, 0, cz);
+            if (surfaceChunk != null
+                    && (surfaceChunk.state == Chunk.ChunkState.BLOCKS_READY
+                        || surfaceChunk.state == Chunk.ChunkState.MESHED)
+                    && surfaceChunk.maxSurfaceWorldY >= Chunk.HEIGHT) {
+                int topCY = Math.min(surfaceChunk.maxSurfaceWorldY / Chunk.HEIGHT, MAX_SKY_CY);
+                for (int cy = 1; cy <= topCY; cy++) {
+                    loadChunkIfNeeded(world, gen, cx, cy, cz);
+                }
+            }
 
             // ── Smart deep-abyss loading ──────────────────────────────────────
             if (gen.isChunkInAbyssZone(cx, cz)

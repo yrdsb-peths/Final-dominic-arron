@@ -79,12 +79,12 @@ public class WorldGen {
 
         eroFbm  = new ErodedFbmGenerator(
                 seed + 20000L,
-                7,
-                0.0025f,
-                2.0f,
-                0.5f
+                5,        // was 7: fewer octaves removes the tiny spike-pillar detail
+                0.00085f, // was 0.0025: 3× wider mountains — this is the main shape fix
+                1.9f,     // was 2.0: smoother octave-to-octave transition
+                0.48f     // was 0.5: each octave contributes a touch less
         );
-        cladder  = new BlockCladder(GameConfig.mountainSnowAltitude);
+        cladder  = new BlockCladder(GameConfig.alpineSnowLineY);
         features = new FeatureGenerator(seed);
 
         // Compute seed-dependent coordinate offsets (splitmix64 pass)
@@ -167,8 +167,10 @@ public class WorldGen {
     public void generateChunk(Chunk chunk) {
         if (chunk.cy < 0) {
             generateDeepAbyssChunk(chunk);
-        } else {
+        } else if (chunk.cy == 0) {
             generateSurfaceChunk(chunk);
+        } else {
+            generateSkyMountainChunk(chunk);
         }
     }
 
@@ -235,6 +237,7 @@ public class WorldGen {
         int worldZ = chunk.cz * Chunk.SIZE;
         // cy == 0, so worldYOffset == 0 and worldY == localY throughout
         final float seaFrac = (GameConfig.seaLevel - GameConfig.heightBase) / (float) GameConfig.heightRange;
+        int maxTY = 0;  // tallest surface in this chunk → drives sky-slab loading
 
         for (int lx = 0; lx < Chunk.SIZE; lx++) {
             for (int lz = 0; lz < Chunk.SIZE; lz++) {
@@ -254,31 +257,13 @@ public class WorldGen {
                 float hum  = sampleHumidity(wx, wz);
 
                 float shape = computeFinalShape(c, e, pv);
-                float targetY = GameConfig.heightBase + shape * GameConfig.heightRange;
 
-                boolean isAlpine = false;
-                float fbmSlope = 0f;
-
-                float mMask = mountainMask.ridgedOctave((wx + seedOffX) * 0.001f, (wz + seedOffZ) * 0.001f, 2, 0.5f);
-                float mountainSpawnThreshold = 0.30f;
-
-                if (c > 0.05f && mMask > mountainSpawnThreshold) {
-                    float[] ero = eroFbm.sampleFull(wx, wz);
-                    float fbmH = ero[0];
-                    fbmSlope = ero[1];
-
-                    float blend = (mMask - mountainSpawnThreshold) / (1f - mountainSpawnThreshold);
-                    blend = Math.max(0f, Math.min(1f, blend));
-                    blend = blend * blend * (3f - 2f * blend);
-
-                    float coastFade = Math.max(0f, Math.min(1f, (c - 0.05f) / 0.15f));
-                    blend *= coastFade;
-
-                    float massiveY = GameConfig.seaLevel + 5f + (fbmH * 225f);
-                    targetY = lerp(targetY, massiveY, blend);
-
-                    if (blend > 0.05f) isAlpine = true;
-                }
+                // Shared alpine-aware column height (identical math used by the
+                // cy≥1 sky-mountain generator so peaks join seamlessly at y512).
+                float[] ch       = computeColumnHeight(wx, wz, shape, c);
+                float   targetY  = ch[0];
+                boolean isAlpine = ch[1] > 0.5f;
+                float   fbmSlope = ch[2];
 
                 // ── Crater rim: raise terrain just outside the abyss entrance ─
                 // Columns in the narrow band outside the shaft wall get a smooth
@@ -296,6 +281,7 @@ public class WorldGen {
                 }
 
                 int ty = (int) targetY;
+                if (ty > maxTY) maxTY = ty;
                 float eNorm   = (e + 1f) / 2f;
                 float flatness = erosionFlatnessSpline(eNorm);
 
@@ -357,6 +343,7 @@ public class WorldGen {
                 boolean hitSurface = false;
                 boolean underGround = false; // Tracks if we have passed the terrain surface
                 int dirtCount = 0;
+                int colSurfaceTop = 0;       // worldY of this column's surface (for alpine cladding)
 
                 for (int ly = Chunk.HEIGHT - 1; ly >= 0; ly--) {
                     if (solid[ly]) underGround = true; // We hit earth, everything below is underground
@@ -380,18 +367,23 @@ public class WorldGen {
                             if (!hitSurface) {
                                 hitSurface = true;
                                 dirtCount = 0;
-                                if (ly >= GameConfig.seaLevel) {
-                                    Block surf = isAlpine ? cladder.surfaceBlock(ly, fbmSlope) : biome.surfaceBlock();
-                                    chunk.setBlock(lx, ly, lz, surf);
+                                colSurfaceTop = ly;
+                                if (isAlpine) {
+                                    // Alpine: deep snow / ice / scree by depth below the summit.
+                                    chunk.setBlock(lx, ly, lz, cladder.columnBlock(colSurfaceTop, ly, fbmSlope));
+                                } else if (ly >= GameConfig.seaLevel) {
+                                    chunk.setBlock(lx, ly, lz, biome.surfaceBlock());
                                 } else if (ly >= GameConfig.seaLevel - 4) {
                                     chunk.setBlock(lx, ly, lz, Block.SAND);
                                 } else {
                                     chunk.setBlock(lx, ly, lz, (wx + wz) % 2 == 0 ? Block.GRAVEL : Block.CLAY);
                                 }
+                            } else if (isAlpine) {
+                                // Continue the alpine column (snow mantle → glacier ice → stone).
+                                chunk.setBlock(lx, ly, lz, cladder.columnBlock(colSurfaceTop, ly, fbmSlope));
                             } else if (dirtCount < 3) {
                                 dirtCount++;
-                                Block sub = isAlpine ? cladder.subSurfaceBlock(ly, fbmSlope) : biome.subSurfaceBlock();
-                                chunk.setBlock(lx, ly, lz, sub);
+                                chunk.setBlock(lx, ly, lz, biome.subSurfaceBlock());
                             } else {
                                 chunk.setBlock(lx, ly, lz, Block.STONE);
                             }
@@ -417,9 +409,91 @@ public class WorldGen {
             }
         }
 
+        // Record the tallest surface so the chunk loader knows how many sky
+        // slabs (cy≥1) this column-stack needs for peaks that pierce y512.
+        chunk.maxSurfaceWorldY = maxTY;
+
         // ── Surface features: sky islands, fossils, crystals, megaliths,
         //    petrified forest, starfall craters ─────────────────────────
         features.applyFeatures(chunk, this);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SHARED COLUMN HEIGHT — alpine-aware surface height for one (wx,wz) column.
+    // Used by BOTH the cy=0 surface generator and the cy≥1 sky generator so a
+    // peak's shape is identical on both sides of the 512-block chunk seam.
+    // Returns { targetY (absolute world Y), isAlpine (1/0), fbmSlope }.
+    // ─────────────────────────────────────────────────────────────────────────
+    private float[] computeColumnHeight(int wx, int wz, float shape, float c) {
+        float targetY  = GameConfig.heightBase + shape * GameConfig.heightRange;
+        boolean isAlpine = false;
+        float fbmSlope = 0f;
+
+        float mMask = mountainMask.ridgedOctave((wx + seedOffX) * 0.001f, (wz + seedOffZ) * 0.001f, 2, 0.5f);
+        // Lower threshold → broader mountain bases with more gradual foothills.
+        float mountainSpawnThreshold = 0.22f;
+
+        if (c > 0.05f && mMask > mountainSpawnThreshold) {
+            float[] ero = eroFbm.sampleFull(wx, wz);
+            float fbmH  = ero[0];
+            fbmSlope    = ero[1];
+
+            float blend = (mMask - mountainSpawnThreshold) / (1f - mountainSpawnThreshold);
+            blend = Math.max(0f, Math.min(1f, blend));
+            blend = blend * blend * (3f - 2f * blend);
+
+            float coastFade = Math.max(0f, Math.min(1f, (c - 0.05f) / 0.15f));
+            blend *= coastFade;
+
+            float massiveY = GameConfig.seaLevel + 5f + (fbmH * GameConfig.mountainPeakAmplitude);
+            targetY = lerp(targetY, massiveY, blend);
+
+            if (blend > 0.05f) isAlpine = true;
+        }
+        return new float[]{ targetY, isAlpine ? 1f : 0f, fbmSlope };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SKY MOUNTAIN CHUNK (cy ≥ 1) — only the upper portion of peaks that rise
+    // above y512. Lean path: no water, rivers, caves, abyss or features — just
+    // the alpine massif and its snow/rock cladding. Columns whose peak doesn't
+    // reach this slab are left as AIR (zero cost, empty-mesh fast path).
+    // ─────────────────────────────────────────────────────────────────────────
+    private void generateSkyMountainChunk(Chunk chunk) {
+        int worldX = chunk.cx * Chunk.SIZE;
+        int worldZ = chunk.cz * Chunk.SIZE;
+        int worldYOffset = chunk.cy * Chunk.HEIGHT;   // 512, 1024, …
+
+        for (int lx = 0; lx < Chunk.SIZE; lx++) {
+            for (int lz = 0; lz < Chunk.SIZE; lz++) {
+                int wx = worldX + lx;
+                int wz = worldZ + lz;
+
+                // Cheap reject: only inland, mountainous columns can pierce the sky.
+                float c = sampleContinentalness(wx, wz);
+                if (c <= 0.05f) continue;
+
+                float e  = sampleErosion(wx, wz);
+                float pv = samplePeaksValleys(wx, wz);
+                float shape = computeFinalShape(c, e, pv);
+
+                float[] ch      = computeColumnHeight(wx, wz, shape, c);
+                int surfaceWorldY = (int) ch[0];
+                float fbmSlope    = ch[2];
+
+                // Peak doesn't reach this slab → whole column is air here.
+                if (surfaceWorldY < worldYOffset) continue;
+
+                int localTop = Math.min(Chunk.HEIGHT - 1, surfaceWorldY - worldYOffset);
+
+                for (int ly = localTop; ly >= 0; ly--) {
+                    int worldY = worldYOffset + ly;
+                    // Same depth-based cladding as the cy=0 path → seamless snow
+                    // mantle / glacier ice / stone across the chunk-height seam.
+                    chunk.setBlock(lx, ly, lz, cladder.columnBlock(surfaceWorldY, worldY, fbmSlope));
+                }
+            }
+        }
     }
 
     private float computeFinalShape(float c, float e, float pv) {

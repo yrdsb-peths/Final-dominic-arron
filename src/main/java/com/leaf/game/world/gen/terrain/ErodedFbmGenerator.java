@@ -68,8 +68,9 @@ public class ErodedFbmGenerator implements HeightmapGenerator {
         normalized = (normalized - 0.3f) / 0.4f;
         normalized = Math.max(0f, Math.min(1f, normalized));
 
-        // Now we can pinch the peaks without shrinking the whole mountain
-        normalized = (float) Math.pow(normalized, 1.4);
+        // Exponent < 1 BROADENS peaks (pushes mid-values up → gradual slopes).
+        // Exponent > 1 sharpens/pinches — bad for skimmable mountains.
+        normalized = (float) Math.pow(normalized, 0.78);
 
         float slopeMag = (float) Math.sqrt(dx * dx + dz * dz);
 

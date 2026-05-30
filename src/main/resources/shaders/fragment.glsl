@@ -71,6 +71,27 @@ void main() {
     vec3 color          = baseColor.rgb * light;
     vec3 gammaCorrected = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 1.2));
 
+    // ── ATMOSPHERIC DISTANCE HAZE (aerial perspective) ────────────────────────
+    // Distant geometry fades into a blue-grey haze, selling the colossal scale
+    // of the snow peaks: a far summit dissolves into cold sky. The haze turns
+    // bluer and brighter with altitude (thin alpine air), and a little warmth
+    // bleeds into low terrain when you look down on it from a peak.
+    // Uses only existing uniforms — no CPU-side wiring needed.
+    if (isUnderwater == 0) {
+        float viewDist = gl_FragCoord.z / gl_FragCoord.w;
+        float hazeT    = 1.0 - exp(-max(0.0, viewDist - 150.0) * 0.0016);
+        hazeT          = clamp(hazeT, 0.0, 0.85);
+
+        float altT = clamp((cameraY - 300.0) / 600.0, 0.0, 1.0);
+        vec3  haze = mix(vec3(0.60, 0.69, 0.80), vec3(0.78, 0.86, 0.98), altT);
+
+        // Valleys/low terrain seen from high up read a touch warmer.
+        float warmT = clamp((cameraY - vWorldY - 300.0) / 600.0, 0.0, 1.0) * altT;
+        haze = mix(haze, vec3(0.88, 0.80, 0.68), warmT * 0.45);
+
+        gammaCorrected = mix(gammaCorrected, haze, hazeT);
+    }
+
     // ── ABYSS DEPTH DARKNESS ──────────────────────────────────────────────────
     float distBelow = cameraY - vWorldY;
     if (distBelow > 80.0) {

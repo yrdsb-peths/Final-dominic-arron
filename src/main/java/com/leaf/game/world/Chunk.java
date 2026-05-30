@@ -22,6 +22,15 @@ public class Chunk {
      */
     public int minBlockY = HEIGHT;
     public int maxBlockY = -1;
+
+    /**
+     * Highest terrain surface (absolute world Y) over this chunk's 16×16
+     * footprint, computed during cy=0 surface generation. The chunk loader
+     * reads it to decide how many sky slabs (cy≥1) a tall mountain needs.
+     * 0 until the surface chunk finishes generating.
+     */
+    public volatile int maxSurfaceWorldY = 0;
+
     public enum ChunkState { EMPTY, GENERATING, BLOCKS_READY, MESHED }
     public volatile ChunkState state = ChunkState.EMPTY;
     /**

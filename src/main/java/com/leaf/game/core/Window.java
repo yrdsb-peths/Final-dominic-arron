@@ -244,6 +244,12 @@ public class Window {
     // windFade: 0→1 multiplier that smoothly fades wind beds in/out instead of
     // abruptly starting/stopping them (avoids pops and sudden silence on landing).
     private float windFade            = 0f;
+    // ── Snow-mountain wind feel ────────────────────────────────────────────────
+    // windExposure: 1 on open ridges/peaks, →~0.08 deep in a sheltered valley
+    // (unnerving near-silence). Recomputed a few times a second and smoothed.
+    private float windExposure        = 1f;
+    private float windExposureSmooth  = 1f;
+    private float windExposureTimer   = 0f;
 
     // ── Footstep state ───────────────────────────────────────────────────────
     // Walking/running files are long loops — we keep one looping continuously
@@ -1701,9 +1707,38 @@ public class Window {
                         float softVol  = SOFT_MAX_VOL * softFade
                                 * Math.min(1f, Math.max(0f, (totalAirSpeed - 1.5f) / 4f));
 
-                        AudioManager.setContinuousVolume("wind/wind_soft", softVol * windFade);
-                        AudioManager.setContinuousVolume("wind/wind_blow", blowVol * windFade);
-                        AudioManager.setContinuousVolume("wind/wind_big",  bigVol  * windFade);
+                        // ── SNOW-MOUNTAIN WIND: altitude + valley shelter ───────
+                        // Recompute exposure a few times a second (cheap terrain
+                        // probe) and smooth it so the wind swells/dies gradually.
+                        windExposureTimer -= deltaTime;
+                        if (windExposureTimer <= 0f) {
+                            windExposure = computeWindExposure(world,
+                                    camera.position.x, camera.position.y, camera.position.z);
+                            windExposureTimer = 0.30f;
+                        }
+                        windExposureSmooth += (windExposure - windExposureSmooth)
+                                * Math.min(1f, deltaTime * 3.0f);
+
+                        // 0 below ~340, →1 by ~960: high air is thinner & higher-pitched.
+                        float windAltT = Math.max(0f, Math.min(1f,
+                                (camera.position.y - 340f) / 620f));
+                        // A thin ambient hiss that's present on exposed high ground even
+                        // when standing still — the cold breath of the summit.
+                        float ambientHiss = windAltT * windExposureSmooth;
+                        float windPitch   = 1.0f + 0.30f * windAltT;
+
+                        // Additive: at low altitude on open terrain (windAltT=0,
+                        // exposure=1) these reduce to the original tuned values.
+                        float fSoft = Math.max(softVol * windFade, ambientHiss * 0.22f) * windExposureSmooth;
+                        float fBlow = Math.max(blowVol * windFade, ambientHiss * 0.10f) * windExposureSmooth;
+                        float fBig  = bigVol * windFade * windExposureSmooth * (1f - 0.55f * windAltT);
+
+                        AudioManager.setContinuousVolume("wind/wind_soft", fSoft);
+                        AudioManager.setContinuousVolume("wind/wind_blow", fBlow);
+                        AudioManager.setContinuousVolume("wind/wind_big",  fBig);
+                        AudioManager.setLoopPitch("wind/wind_soft", windPitch);
+                        AudioManager.setLoopPitch("wind/wind_blow", windPitch * 0.97f);
+                        AudioManager.setLoopPitch("wind/wind_big",  1.0f + 0.12f * windAltT);
 
                         // ── TILT PAN ───────────────────────────────────────────
                         // When flying and rolling, shift wind_blow left/right to match
@@ -2107,6 +2142,18 @@ public class Window {
                 // Redirect 3-D render into the off-screen FBO
                 org.lwjgl.opengl.GL30.glBindFramebuffer(
                         org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, kamuiFbo);
+            }
+
+            // ── ALTITUDE SKY TINT ─────────────────────────────────────────────
+            // The sky pales to a thin, cold high-altitude blue as you climb the
+            // peaks, matching the distance haze so far summits melt into the sky
+            // instead of ending on a hard edge. Suppressed underwater/abyss.
+            if (networkInitialized && !isPreloading) {
+                float altT = Math.max(0f, Math.min(1f, (camera.position.y - 300f) / 600f));
+                float sr = 0.50f + 0.28f * altT;   // → 0.78
+                float sg = 0.70f + 0.16f * altT;   // → 0.86
+                float sb = 0.90f + 0.08f * altT;   // → 0.98
+                glClearColor(sr, sg, sb, 1.0f);
             }
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -3250,6 +3297,34 @@ public class Window {
             idx.add(b+2); idx.add(b+3); idx.add(b);
             vIndex[0] += 4;
         }
+    }
+
+    // ── Wind exposure probe ─────────────────────────────────────────────────
+    // Estimates how exposed the listener is: 1.0 on an open ridge/peak with
+    // nothing around, dropping toward ~0.08 deep in a sheltered valley where
+    // terrain walls rise above head height on most sides. Drives the eerie
+    // near-silence of sheltered valleys and lets wind swell on exposed peaks.
+    // Cheap: 8 directions × 3 height samples, called a few times a second.
+    private float computeWindExposure(com.leaf.game.world.World world,
+                                      float px, float py, float pz) {
+        int feet = (int) Math.floor(py);
+        int ix = (int) Math.floor(px), iz = (int) Math.floor(pz);
+        final int R = 18;
+        int[][] dirs = {
+                { R, 0 }, { -R, 0 }, { 0, R }, { 0, -R },
+                { R, R }, { -R, -R }, { R, -R }, { -R, R }
+        };
+        int blocked = 0;
+        for (int[] d : dirs) {
+            boolean wall = false;
+            // "walled" if solid terrain rises to/above head height in that direction
+            for (int dy = 2; dy <= 22 && !wall; dy += 4) {
+                if (world.getBlock(ix + d[0], feet + dy, iz + d[1]).isSolid()) wall = true;
+            }
+            if (wall) blocked++;
+        }
+        float shelter = blocked / (float) dirs.length;   // 1 = fully enclosed
+        return Math.max(0.08f, 1f - shelter);
     }
 
     // ── Frustum culling ───────────────────────────────────────────────────────

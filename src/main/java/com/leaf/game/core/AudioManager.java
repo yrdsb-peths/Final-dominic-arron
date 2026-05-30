@@ -538,6 +538,21 @@ public class AudioManager {
         });
     }
 
+    /**
+     * Real-time pitch shift on a looping source (1.0 = normal). Used to make
+     * high-altitude wind thinner and higher-pitched than low wind. OpenAL
+     * resamples on the fly. Silently ignored if the loop hasn't started.
+     */
+    public static void setLoopPitch(String name, float pitch) {
+        ensureInit();
+        final float p = Math.max(0.25f, Math.min(4f, pitch));
+        AUDIO.submit(() -> {
+            if (!ready) return;
+            Integer s = loops.get(name);
+            if (s != null) alSourcef(s, AL_PITCH, p);
+        });
+    }
+
     // ── Global controls ──────────────────────────────────────────────────────
 
     /** Master volume 0..1, applied on top of every per-sound gain. */

@@ -15,6 +15,23 @@ public class GameConfig {
     public static float coldTempThreshold    = -0.25f;
     public static int   mountainSnowAltitude = 120;
 
+    // ── SKY-PIERCING SNOW MOUNTAINS ──────────────────────────────────────────
+    // Alpine peak height ≈ seaLevel + 5 + fbmH * mountainPeakAmplitude, where
+    // fbmH is pinched eroded-FBM noise in [0,1] (most terrain low, only ridges
+    // spike). 780 → the tallest ridges reach ≈ y1005, far past the old 512
+    // chunk-top, so mountains grow up into the cy=1 sky slabs. Crank higher for
+    // even more absurd peaks (also raise World's sky-slab cap if you exceed
+    // ~1530, i.e. y past cy=2). The terrain generator + chunk loader read this.
+    public static float mountainPeakAmplitude = 540f;
+    // Width multiplier: broader mountains need proportionally more amplitude
+    // for the same peak height. 540 gives max ~y740 on broad alpine ridges.
+    // Alpine snow line (world Y): below this, exposed slopes are rock/scree
+    // (a realistic grey skirt); above it, slopes accumulate snow → icy summits.
+    public static int   alpineSnowLineY        = 330;
+    // How many blocks of SNOW pile on a shallow alpine slope before the icy
+    // sub-surface begins. Gives avalanches material and reads as deep snow.
+    public static int   alpineSnowDepthMax     = 5;
+
     public static float contFreq    = 0.001f;
     public static int   contOctaves = 2;
     public static float contPersist = 0.35f;
