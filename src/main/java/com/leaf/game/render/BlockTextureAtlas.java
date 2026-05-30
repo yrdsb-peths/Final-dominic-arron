@@ -2,7 +2,6 @@
 package com.leaf.game.render;
 
 import com.leaf.game.world.Block;
-import org.lwjgl.BufferUtils;
 import org.lwjgl.stb.STBImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -84,23 +83,27 @@ public class BlockTextureAtlas {
         }
 
         System.out.println("[Atlas] Uploading to OpenGL...");
-        ByteBuffer buf = BufferUtils.createByteBuffer(atlas.length);
-        buf.put(atlas).flip();
+        ByteBuffer buf = MemoryUtil.memAlloc(atlas.length);
+        try {
+            buf.put(atlas).flip();
 
-        textureId = glGenTextures();
-        glBindTexture(GL_TEXTURE_2D, textureId);
+            textureId = glGenTextures();
+            glBindTexture(GL_TEXTURE_2D, textureId);
 
-        // Use proper unpacking alignment just in case
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            // Use proper unpacking alignment just in case
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlasW, atlasH,
-                0, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-        glBindTexture(GL_TEXTURE_2D, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, atlasW, atlasH,
+                    0, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        } finally {
+            MemoryUtil.memFree(buf);
+        }
 
         loaded = true;
         System.out.println("[Atlas] Built " + atlasW + "x" + atlasH
