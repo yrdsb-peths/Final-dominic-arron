@@ -186,8 +186,10 @@ public class EnemyManager {
         }
     }
 
-    /** Find the open-sky surface at a specific (x,z), or null if none. */
-    private Vector3f surfaceAt(World world, float sx, float sz) {
+    /** Find the open-sky surface at a specific (x,z), or null if none.
+     *  Public so the tutorial spawner can reuse the exact same ground-placement
+     *  logic (top-down scan + open-sky check) and never place enemies underground. */
+    public Vector3f surfaceAt(World world, float sx, float sz) {
         int bx = (int) Math.floor(sx), bz = (int) Math.floor(sz);
         for (int by = Chunk.HEIGHT - 2; by >= 1; by--) {
             if (world.getBlock(bx, by, bz).isSolid()

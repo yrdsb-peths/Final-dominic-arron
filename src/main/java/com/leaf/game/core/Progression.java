@@ -141,10 +141,16 @@ public class Progression {
     /**
      * Directly grant Kamui regardless of wave progress.
      * Called when the 3rd death triggers the awakening cutscene.
+     *
+     * IMPORTANT: this must NOT touch maxTier. Kamui is death-earned and completely
+     * independent of the wave-tier ladder. A previous version set maxTier = 8 here,
+     * which made unlockForWave() treat every wave ≤ 8 as "already earned" — so after
+     * the 3rd death, clearing waves 1–8 silently failed to unlock their abilities
+     * (the card still showed via the abilitiesForWave fallback, but player.can(...)
+     * stayed false). Adding KAMUI directly to `unlocked` is all that's needed.
      */
     public void grantKamui() {
         unlocked.add(Ability.KAMUI);
-        if (maxTier < 8) maxTier = 8;   // treat as if wave-8 was cleared
     }
 
     /** Story headline for a wave's unlock card. */

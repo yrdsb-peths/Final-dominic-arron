@@ -713,12 +713,14 @@ public class Window {
         if (step.onEnter != null) step.onEnter.accept(practiceCtx);
     }
 
-    /** Finish all practice, remove dummies, resume the wave. */
+    /** Finish all practice, remove ALL practice enemies, resume the wave. */
     private void endPractice() {
         practiceAbility = null;
         practiceSteps   = null;
-        // Remove practice dummies.
-        enemyManager.getEnemies().forEach(e -> { if (e.type == Enemy.Type.DUMMY) e.alive = false; });
+        // Waves are disabled during practice, so every enemy present was spawned by
+        // the tutorial. Remove them all (dummies AND slimes) so the next real wave
+        // starts from a clean slate and aliveCount()==0 lets it spawn.
+        enemyManager.getEnemies().clear();
         enemyManager.beginNextWave();
         enemyManager.wavesEnabled = true;
         lastPracticeEnter = true;
