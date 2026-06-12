@@ -338,6 +338,13 @@ public class AttackController {
                     // Skip out-of-world coordinates
                     if (by < 0 || by >= Chunk.HEIGHT) continue;
 
+                    // Never carve at or below the player's footing — a slash must not dig a
+                    // pit that you and the enemies drop into (the #1 thing that broke fights).
+                    // On flat ground nothing here is solid, so the cleave becomes a pure combat
+                    // strike; into a hillside/wall it still shatters everything above the floor.
+                    if (GameConfig.cleaveProtectsFloor
+                            && by < (int) Math.floor(player.position.y)) continue;
+
                     Block b = world.getBlock(bx, by, bz);
 
                     // Keep solid structure blocks and air intact

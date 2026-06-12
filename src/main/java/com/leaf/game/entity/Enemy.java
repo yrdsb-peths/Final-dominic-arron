@@ -90,6 +90,10 @@ public class Enemy {
     public final float collisionRadius;
     public final float halfHeight;
 
+    // Render scale + knockback resistance, sourced from EnemyArchetype.
+    public final float scaleX, scaleY, scaleZ;
+    public final float knockbackResist;
+
     /**
      * Finale GIANT support: multiplies render scale and hitbox dimensions.
      * healthScale keeps the HP bar fraction correct when health was boosted
@@ -198,88 +202,22 @@ public class Enemy {
         this.type     = type;
         this.position = new Vector3f(x, y, z);
 
-        float cr = RADIUS, hh = HALF_HEIGHT;
-        float health_, speed_, dps_, aggro_, atk_, atkI_;
-
-        switch (type) {
-            case GOLEM -> {
-                health_ = GameConfig.golemHealth;  speed_ = GameConfig.golemSpeed;
-                dps_    = GameConfig.golemDamagePerSec;  aggro_ = GameConfig.golemAggroRange;
-                atk_    = GameConfig.golemAttackRange;   atkI_  = GameConfig.golemAttackInterval;
-                cr = 1.1f; hh = 1.8f;
-            }
-            case THROWER -> {
-                health_ = GameConfig.throwerHealth; speed_ = GameConfig.throwerSpeed;
-                dps_    = GameConfig.throwerDamagePerSec; aggro_ = GameConfig.throwerAggroRange;
-                atk_    = GameConfig.throwerAttackRange;  atkI_  = GameConfig.throwerAttackInterval;
-                cr = 0.5f; hh = 1.1f;
-            }
-            case ZOMBIE -> {
-                health_ = GameConfig.zombieHealth;  speed_ = GameConfig.zombieSpeed;
-                dps_    = GameConfig.zombieDamagePerSec;  aggro_ = GameConfig.zombieAggroRange;
-                atk_    = GameConfig.zombieAttackRange;   atkI_  = GameConfig.zombieAttackInterval;
-                cr = 0.5f; hh = 1.0f;
-            }
-            case SLIME -> {
-                health_ = GameConfig.slimeHealth;  speed_ = GameConfig.slimeSpeed;
-                dps_    = GameConfig.slimeDamagePerSec;  aggro_ = GameConfig.slimeAggroRange;
-                atk_    = GameConfig.slimeAttackRange;   atkI_  = GameConfig.slimeAttackInterval;
-                cr = 0.6f; hh = 0.5f;
-            }
-            case GUARDIAN -> {
-                health_ = GameConfig.guardianHealth; speed_ = GameConfig.guardianSpeed;
-                dps_    = GameConfig.guardianHitDamage; aggro_ = GameConfig.guardianAggroRange;
-                atk_    = GameConfig.guardianAttackRange; atkI_ = GameConfig.guardianAttackTime;
-                cr = 1.1f; hh = 1.4f;
-            }
-            case DUMMY -> {
-                // Practice target: never moves, never attacks, very high HP.
-                health_ = 999f; speed_ = 0f; dps_ = 0f; aggro_ = 0f;
-                atk_    = 0f;   atkI_  = 999f;
-                cr = 0.5f; hh = 1.0f;
-            }
-            case SPIDER -> {
-                health_ = 180f; speed_ = 8.0f;
-                dps_    = 25f;  aggro_ = 45f;
-                atk_    = 2.5f; atkI_  = 1.2f;
-                cr = 1.2f; hh = 0.8f; // Wide, squat hitbox
-            }
-            case LAVA_SLIME -> {
-                health_ = GameConfig.lavaSlimeHealth;  speed_ = GameConfig.lavaSlimeSpeed;
-                dps_    = GameConfig.lavaSlimeDamagePerSec;  aggro_ = GameConfig.lavaSlimeAggroRange;
-                atk_    = GameConfig.lavaSlimeAttackRange;   atkI_  = GameConfig.lavaSlimeAttackInterval;
-                cr = 0.6f; hh = 0.5f;            // identical body to SLIME
-            }
-            case INFERNO_TOWER -> {
-                // Stationary high-HP spawner; physically inert like DUMMY but active.
-                health_ = GameConfig.infernoTowerHealth;  speed_ = 0f;
-                dps_    = 0f;  aggro_ = GameConfig.infernoAggroRange;
-                atk_    = 0f;  atkI_  = 999f;
-                cr = 3.0f; hh = 6.0f;            // ~12-block-tall model footprint
-            }
-            case TREANT -> {
-                health_ = 450f;  speed_ = 3.0f; // Slow, massive health
-                dps_    = 45f;   aggro_ = 0f;   // Won't auto-aggro, must be hit
-                atk_    = 3.5f;  atkI_  = 1.5f;
-                cr = 1.0f; hh = 2.5f;
-            }
-            default -> {
-                health_ = GameConfig.throwerHealth; speed_ = GameConfig.throwerSpeed;
-                dps_    = GameConfig.throwerDamagePerSec; aggro_ = GameConfig.throwerAggroRange;
-                atk_    = GameConfig.throwerAttackRange;  atkI_  = GameConfig.throwerAttackInterval;
-                cr = 0.5f; hh = 1.1f;
-            }
-        }
-
-        this.maxHealth       = health_;
-        this.health          = health_;
-        this.speed           = speed_;
-        this.damagePerSec    = dps_;
-        this.aggroRange      = aggro_;
-        this.attackRange     = atk_;
-        this.attackInterval  = atkI_;
-        this.collisionRadius = cr;
-        this.halfHeight      = hh;
+        // All per-type stats live in one place now — see EnemyArchetype.
+        // Read fresh each spawn so runtime GameConfig tweaks still apply.
+        EnemyArchetype a = EnemyArchetype.forType(type);
+        this.maxHealth       = a.health;
+        this.health          = a.health;
+        this.speed           = a.speed;
+        this.damagePerSec    = a.damagePerSec;
+        this.aggroRange      = a.aggroRange;
+        this.attackRange     = a.attackRange;
+        this.attackInterval  = a.attackInterval;
+        this.collisionRadius = a.radius;
+        this.halfHeight      = a.halfHeight;
+        this.scaleX          = a.scaleX;
+        this.scaleY          = a.scaleY;
+        this.scaleZ          = a.scaleZ;
+        this.knockbackResist = a.knockbackResist;
     }
 
     public Enemy(float x, float y, float z) { this(x, y, z, Type.THROWER); }
@@ -302,11 +240,7 @@ public class Enemy {
 
     public void applyKnockback(float kx, float ky, float kz) {
         if (type == Type.INFERNO_TOWER) return;
-        float resist = switch (type) {
-            case GOLEM -> 0.15f;
-            case SPIDER, TREANT -> 0.30f;
-            default -> 1.0f;
-        };
+        float resist = knockbackResist;
         knockbackVelX = kx * resist;
         knockbackVelZ = kz * resist;
         if (ky > 0f) velocityY = Math.max(velocityY, ky * resist);
@@ -1203,18 +1137,7 @@ public class Enemy {
     }
 
     private float[] baseScaleVec() {
-        return switch (type) {
-            case GOLEM    -> new float[]{ 1.40f, 1.60f, 1.40f };
-            case THROWER  -> new float[]{ 0.48f, 0.92f, 0.48f };
-            case ZOMBIE   -> new float[]{ 0.75f, 0.88f, 0.75f };
-            case SLIME    -> new float[]{ 0.85f, 0.85f, 0.85f };
-            case GUARDIAN -> new float[]{ 1.0f,  1.0f,  1.0f  };
-            case SPIDER   -> new float[]{ 1.0f,  1.0f,  1.0f  };
-            case DUMMY    -> new float[]{ 0.75f, 0.88f, 0.75f };
-            case LAVA_SLIME    -> new float[]{ 0.92f, 0.92f, 0.92f };   // slightly chunkier slime
-            case TREANT    -> new float[]{ 1.0f,  1.0f,  1.0f};
-            case INFERNO_TOWER -> new float[]{ 3.0f,  3.0f,  3.0f  };   // ~12-block landmark
-        };
+        return new float[]{ scaleX, scaleY, scaleZ };   // sourced from EnemyArchetype
     }
 
     public float renderScale() {

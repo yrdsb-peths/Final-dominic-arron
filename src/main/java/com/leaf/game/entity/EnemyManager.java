@@ -36,12 +36,9 @@ import java.util.Set;
  *     • Calls em.findClosestVisible(world, standPos, maxRange) for auto-aim.
  *
  * ── Wave spawning ─────────────────────────────────────────────────────────
- *   Every GameConfig.spawnWaveInterval seconds, a wave of enemies spawns
- *   around the player.  Wave size = spawnWaveBase + waveNumber / 2.
- *   Composition grows more varied as waves increase:
- *     Wave 1–2 : PREDATOR + THROWER
- *     Wave 3–6 : PREDATOR + THROWER + rare GOLEM
- *     Wave 7+  : all three, GOLEM frequency grows each wave
+ *   Clear-based: a wave spawns around the player, and the next one begins
+ *   after it is cleared and Window dismisses the unlock card. Wave size and
+ *   type mix are authored per wave in {@link WaveTable}.
  *   Spawn points are chosen by picking a random angle at a random distance
  *   in [spawnMinDist, spawnMaxDist] from the player, then scanning downward
  *   from near sky-limit to find a solid surface to land on.
@@ -555,50 +552,20 @@ public class EnemyManager {
     private int spawnWave(World world, Vector3f playerPos) {
         waveNumber++;
 
-        int count = Math.min(
-            GameConfig.spawnWaveBase + waveNumber / 2,
-            GameConfig.spawnMaxEnemies - enemies.size()
-        );
+        // Composition is authored in WaveTable — edit the curve there, not here.
+        WaveTable.WaveDef def = WaveTable.forWave(waveNumber);
+        int count = Math.min(def.count, GameConfig.spawnMaxEnemies - enemies.size());
         if (count <= 0) { waveNumber--; return 0; } // couldn't spawn — undo the increment, retry later
 
         int spawned = 0;
         for (int i = 0; i < count; i++) {
             Vector3f spawnPos = findSpawnPoint(world, playerPos);
             if (spawnPos == null) continue; // no valid surface found
-            Enemy.Type type = pickType();
-            spawnAt(spawnPos.x, spawnPos.y, spawnPos.z, type);
+            spawnAt(spawnPos.x, spawnPos.y, spawnPos.z, def.pick(rng));
             spawned++;
         }
         if (spawned == 0) waveNumber--; // nothing placed this frame — let it retry without burning a wave number
         return spawned;
-    }
-
-    /**
-     * Choose an enemy type biased toward tougher enemies in later waves.
-     *
-     * Wave 1–2  : ZOMBIE (slow melee) + THROWER (skeleton archer)
-     * Wave 3–6  : All three — mostly ZOMBIE + THROWER, rare GOLEM (tank)
-     * Wave 7+   : GOLEM frequency climbs to ~35%, rest split zombie/thrower
-     */
-    private Enemy.Type pickType() {
-        float r = rng.nextFloat();
-        if (waveNumber <= 2) {
-            // Early waves: Zombies, Slimes, and a few Throwers
-            return r < 0.40f ? Enemy.Type.ZOMBIE : (r < 0.70f ? Enemy.Type.SLIME : Enemy.Type.THROWER);
-        } else if (waveNumber <= 6) {
-            if (r < 0.08f)      return Enemy.Type.GOLEM;
-            else if (r < 0.40f) return Enemy.Type.SLIME;
-            else if (r < 0.55f) return Enemy.Type.SPIDER;
-            else if (r < 0.70f) return Enemy.Type.ZOMBIE;
-            else                return Enemy.Type.THROWER;
-
-        } else {
-            float golemChance = Math.min(0.35f, 0.10f + (waveNumber - 7) * 0.025f);
-            if (r < golemChance)             return Enemy.Type.GOLEM;
-            else if (r < golemChance + 0.25f) return Enemy.Type.SLIME;
-            else if (r < golemChance + 0.50f) return Enemy.Type.ZOMBIE;
-            else                              return Enemy.Type.THROWER;
-        }
     }
 
     /**

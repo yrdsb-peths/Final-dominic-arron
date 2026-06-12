@@ -73,6 +73,11 @@ public class Player {
 
     private boolean lastSpace    = false;
     private double  lastSpaceTime = 0;
+    private int     airJumpsUsed = 0;   // mid-air jumps consumed since last touching ground
+
+    /** Authoritative smoothed horizontal velocity (blocks/sec). Single source of truth —
+     *  never reconstructed from position deltas, so it can't fling the player. */
+    private final Vector3f horizVel = new Vector3f();
 
     // ── FLIGHT ENGINE ─────────────────────────────────────────────────────────
     // Public so Window.java can read roll/fov each frame.
@@ -147,6 +152,9 @@ public class Player {
         // ── Clear per-frame smash signal ──────────────────────────────────────
         smashImpactX = Integer.MIN_VALUE;
 
+        // ── Landing dip spring-back (runs every frame; harmless when viewDip == 0) ─
+        viewDip += (0f - viewDip) * Math.min(1f, GameConfig.landingDipRecover * deltaTime);
+
         // ── DOUBLE-TAP W → SPRINT ─────────────────────────────────────────────
         boolean currentW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
         if (currentW && !lastW) {
@@ -162,10 +170,12 @@ public class Player {
             // Flight is a late unlock; allow exiting if already flying, but block entering until learned.
             // Never toggle in test-movement modes (flappy spams SPACE = accidental skim/soar).
             boolean flightAllowed = (debugMode || can(Progression.Ability.FLIGHT)) && !useTestMovement;
+            boolean flightToggled = false;
             if (now - lastSpaceTime < 0.3 && !stand.isInStandPerspective() && flightAllowed) {
                 debugMode = !debugMode;
                 velocityY = 0f;
                 isSmashing = false;
+                flightToggled = true;
                 if (!debugMode) {
                     flightController.onFlightDeactivated();
                     Vector3f lv = flightController.getLaunchVelocity();
@@ -173,6 +183,18 @@ public class Player {
                     position.x += lv.x * deltaTime;
                     position.z += lv.z * deltaTime;
                 }
+            }
+            // ── AIR-JUMP (double jump) ────────────────────────────────────────
+            // A second hop in mid-air — the basis of agile, vertical fights. Doesn't
+            // fire if this same press just toggled flight, and never in water/flight/
+            // smash/drone. Resets when you touch the ground.
+            if (!flightToggled && !debugMode && !useTestMovement && !onGround
+                    && !wasInWater && !isSmashing
+                    && !stand.isInStandPerspective()
+                    && airJumpsUsed < GameConfig.airJumpCount) {
+                velocityY = GameConfig.JUMP_FORCE * GameConfig.airJumpFactor;
+                airJumpsUsed++;
+                AudioManager.play("swoosh", 0.55f);
             }
             lastSpaceTime = now;
         }
@@ -192,6 +214,7 @@ public class Player {
 
         // ── FLIGHT MODE — delegate to FlightController ───────────────────────
         if (debugMode) {
+            horizVel.zero();   // no stale ground momentum carried out of flight
             flightController.update(window, camera, world, deltaTime);
             wasFlying = true;
             syncEye(camera);
@@ -209,6 +232,7 @@ public class Player {
         // Must run before abilities so that drone-perspective takes priority.
         // Returns true when the player is piloting the drone — body is frozen.
         if (stand.tick(window, camera, world, deltaTime)) {
+            horizVel.zero();   // body is frozen while piloting the drone
             attacks.tick(window, stand.standCamera, world, deltaTime);
             // Gravity still applies to the player body while piloting the drone
             boolean inWaterD = isBlockLiquid(world, position.x + upDir.x * 0.1f,
@@ -239,6 +263,7 @@ public class Player {
         // Runs before physics. Returns true when ability has full positional
         // control (Rewind) — caller skips the physics block entirely.
         if (abilities.tick(window, camera, world, deltaTime)) {
+            horizVel.zero();   // ability took full positional control (e.g. Rewind)
             syncEye(camera);
             return;
         }
@@ -329,6 +354,7 @@ public class Player {
 
         // Run movement physics
         if (isGrappleHooked) {
+            horizVel.zero();   // grapple drives position directly; don't carry stale momentum out
             // Apply collision-safe zip displacement directly
             float sx = zipX * deltaTime;
             float sy = zipY * deltaTime;
@@ -374,6 +400,7 @@ public class Player {
             // ── GROUND SMASH — pre-empt normal input while smashing ───────────
             if (isSmashing) {
                 // Accelerate "downward" (toward gravity) like real free-fall.
+                horizVel.zero();
                 velocityY = Math.max(-GameConfig.smashDescentMaxSpeed,
                         velocityY - GameConfig.smashDescentAccel * deltaTime);
                 float targetPitch = -(float)(Math.PI * 0.305);
@@ -383,32 +410,74 @@ public class Player {
                 // ── DASH — override WASD with dash velocity ────────────────────
                 wish.x = abilities.dashDirX * GameConfig.dashSpeed * deltaTime;
                 wish.z = abilities.dashDirZ * GameConfig.dashSpeed * deltaTime;
+                // Seed smoothed velocity so the dash's momentum glides out cleanly.
+                horizVel.set(abilities.dashDirX * GameConfig.dashSpeed, 0f,
+                             abilities.dashDirZ * GameConfig.dashSpeed);
 
             } else if (abilities.isCannonballing) {
                 // ── CANNONBALL — override horizontal movement ──────────────────
                 wish.x = abilities.cannonVelX * deltaTime;
                 wish.z = abilities.cannonVelZ * deltaTime;
+                horizVel.set(abilities.cannonVelX, 0f, abilities.cannonVelZ);
 
             } else if (abilities.isPillaring || abilities.isHealing) {
                 // Lock horizontal movement while performing stone pillar rise or channeling heal
+                horizVel.zero();
 
             } else {
-                float sd = speed * deltaTime;
                 // Split forward into a horizontal (⊥ up) part for walking and an up part for
                 // swimming, so moving while looking up/down in water doesn't double-count the
                 // vertical (matches the old forward.x/z-walk + forward.y-swim behaviour).
                 float    fUp    = forward.dot(upDir);
                 Vector3f fHoriz = new Vector3f(forward).fma(-fUp, upDir);
+
+                // Build the desired horizontal direction from WASD (camera-relative). The
+                // swim-vertical impulses stay exactly as before; only the horizontal part
+                // is velocity-smoothed.
+                Vector3f wishDir = new Vector3f();
                 if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-                    wish.fma(sd, fHoriz);
+                    wishDir.add(fHoriz);
                     if (isCameraInWater) velocityY += fUp * speed * 3.5f * deltaTime;
                 }
                 if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-                    wish.fma(-sd, fHoriz);
+                    wishDir.sub(fHoriz);
                     if (isCameraInWater) velocityY -= fUp * speed * 3.5f * deltaTime;
                 }
-                if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) wish.fma(sd, right);
-                if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) wish.fma(-sd, right);
+                if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) wishDir.add(right);
+                if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) wishDir.sub(right);
+                wishDir.y = 0f;   // locomotion stays on the ground plane; vertical is handled separately
+
+                // Target velocity = normalized input direction × current speed.
+                float tvx = 0f, tvz = 0f;
+                if (wishDir.lengthSquared() > 1e-6f) {
+                    wishDir.normalize();
+                    tvx = wishDir.x * speed;
+                    tvz = wishDir.z * speed;
+                }
+
+                if (GameConfig.smoothMovement) {
+                    // Ease horizVel toward the target. Asymmetric & tight: accel ramps the
+                    // start (no jerk), decel snaps the stop (no slide). Frame-rate-independent.
+                    boolean hasInput = (tvx != 0f || tvz != 0f);
+                    float rate = onGround
+                            ? (hasInput ? GameConfig.groundAccel : GameConfig.groundDecel)
+                            : (hasInput ? GameConfig.airAccel    : GameConfig.airDecel);
+                    float k = 1f - (float) Math.exp(-rate * deltaTime);
+                    horizVel.x += (tvx - horizVel.x) * k;
+                    horizVel.z += (tvz - horizVel.z) * k;
+                    // Safety clamp — horizontal speed can never run away and fling the player.
+                    float cap = GameConfig.SPRINT_SPEED * 1.35f;
+                    float sp2 = horizVel.x * horizVel.x + horizVel.z * horizVel.z;
+                    if (sp2 > cap * cap) {
+                        float s = cap / (float) Math.sqrt(sp2);
+                        horizVel.x *= s; horizVel.z *= s;
+                    }
+                } else {
+                    horizVel.set(tvx, 0f, tvz);   // instant (legacy feel)
+                }
+
+                wish.x = horizVel.x * deltaTime;
+                wish.z = horizVel.z * deltaTime;
             }
 
             // ── SURVIVAL PHYSICS ──────────────────────────────────────────────
@@ -431,27 +500,34 @@ public class Player {
                 velocityY  = Math.max(-4.0f, Math.min(4.0f, velocityY));
 
                 wish.mul(isSprinting ? 0.90f : 0.55f);
+                horizVel.mul(isSprinting ? 0.90f : 0.55f);   // keep smoothed velocity in sync with water drag
                 highestY = h;
                 isSmashing = false;
                 abilities.cancelCannonball(); // water takes over, cannonball ends cleanly
 
             } else if (!isSmashing) {
-                velocityY -= GameConfig.GRAVITY * deltaTime;
+                if (GameConfig.dashFliesFlat && abilities.isDashing) {
+                    // Flat air-dash: suspend gravity for the burst so it flies straight forward
+                    // instead of sagging into an arc. Gravity resumes the instant the dash ends.
+                    velocityY = 0f;
+                } else {
+                    velocityY -= GameConfig.GRAVITY * deltaTime;
 
-                if (wasInWater && currentSpace) {
-                    velocityY = GameConfig.JUMP_FORCE * 0.85f;
-                } else if (currentSpace && onGround) {
-                    velocityY = GameConfig.JUMP_FORCE;
-                    onGround  = false;
-                }
+                    if (wasInWater && currentSpace) {
+                        velocityY = GameConfig.JUMP_FORCE * 0.85f;
+                    } else if (currentSpace && onGround) {
+                        velocityY = GameConfig.JUMP_FORCE;
+                        onGround  = false;
+                    }
 
-                boolean shiftJustPressed = shiftHeld && !lastShift;
-                if (!onGround
-                        && shiftJustPressed
-                        && velocityY < GameConfig.smashTriggerVelocity
-                        && (highestY - h) > GameConfig.smashMinHeight) {
-                    isSmashing = true;
-                    mana = Math.max(0f, mana - GameConfig.manaSmash);  // drain; never cancel mid-air
+                    boolean shiftJustPressed = shiftHeld && !lastShift;
+                    if (!onGround
+                            && shiftJustPressed
+                            && velocityY < GameConfig.smashTriggerVelocity
+                            && (highestY - h) > GameConfig.smashMinHeight) {
+                        isSmashing = true;
+                        mana = Math.max(0f, mana - GameConfig.manaSmash);  // drain; never cancel mid-air
+                    }
                 }
             }
 
@@ -503,6 +579,12 @@ public class Player {
                         health -= (fallDist * 0.5f - 2.0f);
                         if (health < 0f) health = 0f;
                     }
+                    // Camera dip on landing, scaled to how far we fell (a small hop barely dips,
+                    // a big drop bends the knees). Camera-only — no gameplay effect.
+                    if (fallDist > 1.2f) {
+                        viewDip = Math.max(viewDip,
+                                Math.min(GameConfig.landingDipMax, fallDist * 0.025f));
+                    }
                 }
                 highestY = hNow;
             } else if (onGround) {
@@ -511,6 +593,8 @@ public class Player {
             } else if (hNow > highestY) {
                 highestY = hNow;
             }
+            // Touching ground refreshes the air-jump budget.
+            if (onGround) airJumpsUsed = 0;
 
             // Reconstruct velocity vector on water-exit so the handoff is perfect
             if (useTestMovement && deltaTime > 0f) {
@@ -534,14 +618,21 @@ public class Player {
     /** Extra roll forced by cinematic sequences (finale wake-up). Not comfort-damped. */
     public float externalRoll = 0f;
 
+    /** Camera "knees-bend" dip on landing (blocks). Set on a hard landing, springs back to 0. Pure juice. */
+    public float viewDip = 0f;
+
     public float getCameraRoll() {
         return (flightController.getCameraRoll() + abilities.getCameraRoll()) * CAMERA_COMFORT
                 + externalRoll;
     }
     public float getCameraFovBoost() {
         if (isSmashing) return -8f * CAMERA_COMFORT;
-        return (flightController.getFovBoost() + abilities.getCameraFovBoost() + attacks.getFovBoost())
+        float boost = (flightController.getFovBoost() + abilities.getCameraFovBoost() + attacks.getFovBoost())
                 * CAMERA_COMFORT;
+        // Sprinting on the ground widens the view a touch — the classic "speed feel" cue.
+        // Window's FOV lerp eases this in/out, so it ramps smoothly as you start/stop sprinting.
+        if (isSprinting && onGround && !debugMode) boost += GameConfig.sprintFovKick;
+        return boost;
     }
     public boolean isSmashing() { return isSmashing; }
 
@@ -559,7 +650,7 @@ public class Player {
             return;
         }
         camera.position.set(position.x + upDir.x * EYE_HEIGHT,
-                position.y + upDir.y * EYE_HEIGHT + cameraYOffset,
+                position.y + upDir.y * EYE_HEIGHT + cameraYOffset - viewDip,
                 position.z + upDir.z * EYE_HEIGHT);
     }
 

@@ -154,6 +154,40 @@ public class GameConfig {
     public static float SPRINT_SPEED = 10.5f;
     public static float FLY_SPEED    = 100.0f;
 
+    // ── MOVEMENT JUICE (camera-only feel; no effect on handling/hitboxes) ────────
+    public static float sprintFovKick    = 7.0f;   // extra FOV degrees while sprinting on the ground
+    public static float landingDipMax    = 0.32f;  // max camera "knees-bend" dip (blocks) on a hard landing
+    public static float landingDipRecover = 9.0f;  // how fast the dip springs back (higher = snappier)
+
+    // ── AGILITY ──────────────────────────────────────────────────────────────────
+    // Air-jump: press jump again in mid-air for a second hop. The foundation of agile,
+    // vertical fights — chains with Dash and the grapple.
+    public static int   airJumpCount    = 1;       // extra mid-air jumps (1 = classic double-jump)
+    public static float airJumpFactor   = 0.92f;   // air-jump strength as a fraction of JUMP_FORCE
+
+    // Air-dash: when true, Dash suspends gravity for its duration so a mid-air dash
+    // flies flat and straight instead of sagging into an arc.
+    public static boolean dashFliesFlat = true;
+
+    // ── SMOOTH MOVEMENT ────────────────────────────────────────────────────────
+    // Velocity-smoothed horizontal locomotion. Rates are 1/sec for a frame-rate-
+    // independent ease. ASYMMETRIC ON PURPOSE: accel < decel, so movement ramps up
+    // smoothly (no single-frame jerk) but stops almost instantly (no slide / mushy
+    // feel). Air rates are kept high too, so air control stays TIGHT — agility comes
+    // from air-dash + double-jump, not from floaty momentum.
+    // Set smoothMovement = false to restore exact instant (legacy) movement.
+    public static boolean smoothMovement = true;
+    public static float groundAccel = 14.0f;   // ground: ramp to target speed (~0.15s — a felt, smooth start)
+    public static float groundDecel = 45.0f;   // ground: near-instant stop on key release (high = no slide)
+    public static float airAccel    = 14.0f;   // air: steer toward input (kept tight, not floaty)
+    public static float airDecel    = 18.0f;   // air: settle when no input (kept tight)
+
+    // Runic Cleave: keep the slash from digging pits you fall into. When true, the
+    // cleave never carves at or below the player's feet — it still shatters walls,
+    // trees and hillsides above ground, but flat ground stays solid so fights don't
+    // collapse into self-dug craters.
+    public static boolean cleaveProtectsFloor = true;
+
     // ── FLIGHT ENGINE ─────────────────────────────────────────────────────────
     // SKIM: low-altitude terrain-hugging burst mode
     public static float skimHeightTarget = 4.5f;   // base hover height above terrain (dynamic; raised for better feel)
