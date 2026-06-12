@@ -182,6 +182,21 @@ void main() {
         baseColor = vertexColor;
     }
 
+    // ── CONSTANT PER-FACE SHADING ("cheap AO") ────────────────────────────────
+    // Voxel terrain reads flat when the sun isn't at a strong angle, because every
+    // visible face gets nearly the same light. A fixed brightness per face *axis*
+    // (top brightest, bottom darkest, X-sides darker than Z-sides) gives blocks
+    // constant form and depth independent of the sun — the classic Minecraft-style
+    // "smooth lighting" look, but per-face and free. Tune the four constants to taste.
+    {
+        vec3  nF = normalize(vertexNormal);
+        float faceShade;
+        if      (nF.y >  0.5) faceShade = 1.00;   // top    — full light
+        else if (nF.y < -0.5) faceShade = 0.62;   // bottom — darkest (underside / overhangs)
+        else                  faceShade = mix(0.80, 0.90, abs(nF.z));  // sides: ±X darker than ±Z
+        lit *= faceShade;
+    }
+
     vec3 color          = baseColor.rgb * lit;
     vec3 gammaCorrected = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 1.2));
 

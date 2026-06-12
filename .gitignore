@@ -43,3 +43,6 @@ prompt.txt
 scheduler.sh
 imgui.ini
 descent_records.txt
+
+# Packaged release builds (hundreds of MB of zips + bundled JRE — never commit)
+itch-release/
