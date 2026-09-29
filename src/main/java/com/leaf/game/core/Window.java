@@ -4396,6 +4396,24 @@ public class Window {
                 orbProjView.set(renderMvp);   // captured for the F7 cinematic overlay
                 shader.setUniform("invViewProj", new Matrix4f(renderMvp).invert());
                 shader.setUniform("screenSize", (float) fw[0], (float) fh[0]);
+                // Share this frame's light with the model/creature shaders.
+                SceneLighting.sunDir.set(dayNight.lightDir);
+                SceneLighting.sunColor.set(dayNight.lightColor);
+                SceneLighting.sunStrength     = (orbitalActive && orbDark) ? 0f : dayNight.lightStrength;
+                SceneLighting.ambientColor.set(dayNight.ambientColor);
+                SceneLighting.ambientStrength = (orbitalActive && orbDark) ? 0f : dayNight.ambientStrength;
+                SceneLighting.skyZenith.set(dayNight.skyZenith);
+                SceneLighting.skyHorizon.set(dayNight.skyHorizon);
+                SceneLighting.sunsetFactor = dayNight.sunsetFactor;
+                SceneLighting.camPos.set(camera.position);
+                SceneLighting.fogEnd = GameConfig.renderDistance * 16.0f;
+                SceneLighting.invViewProj.set(renderMvp).invert();
+                SceneLighting.screenW = fw[0]; SceneLighting.screenH = fh[0];
+                SceneLighting.shadowOn = shadowsLive;
+                if (shadowMap != null) {
+                    SceneLighting.lightVP.set(shadowMap.lightVP());
+                    SceneLighting.shadowTexel = shadowMap.texelWorld();
+                }
                 float[] frustumPlanes = extractFrustumPlanes(renderMvp);
 
                 // ── DAY/NIGHT SKY  -  gradient + sun + stars, behind everything ──

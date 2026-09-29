@@ -69,6 +69,7 @@ public class ModelRenderer {
         shader.bind();
         shader.setUniform("lightDir", new Vector3f(0.6f, 1f, 0.4f).normalize());
         shader.setUniform("ambient", 0.35f);
+        com.leaf.game.core.SceneLighting.apply(shader);
         // Radar override (defaults are a no-op: tintAmt 0, glow 1, depth on).
         shader.setUniform("tintColor", tintColor);
         shader.setUniform("tintAmt", tintAmt);
@@ -128,6 +129,7 @@ public class ModelRenderer {
         shader.bind();
         shader.setUniform("lightDir", new Vector3f(0.6f, 1f, 0.4f).normalize());
         shader.setUniform("ambient", 0.35f);
+        com.leaf.game.core.SceneLighting.apply(shader);
         shader.setUniform("tintColor", tintColor);
         shader.setUniform("tintAmt", 0f);
         shader.setUniform("glow", 1f);

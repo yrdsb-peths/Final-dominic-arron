@@ -31,6 +31,7 @@ public class SpiderRenderer {
         spiderShader.bind();
         spiderShader.setUniform("lightDir", new Vector3f(0.6f, 1f, 0.4f).normalize());
         spiderShader.setUniform("ambient", 0.45f);
+        com.leaf.game.core.SceneLighting.apply(spiderShader);
         spiderShader.setUniform("tintColor", new Vector3f(0f, 0f, 0f));
         spiderShader.setUniform("tintAmt", 0f);
         spiderShader.setUniform("glow", 1.0f);

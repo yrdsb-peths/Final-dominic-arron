@@ -53,6 +53,7 @@ public class TreantRenderer {
         // Standard model-shader uniforms (same defaults as SpiderRenderer)
         shader.setUniform("lightDir", new Vector3f(0.6f, 1f, 0.4f).normalize());
         shader.setUniform("ambient",  0.45f);
+        com.leaf.game.core.SceneLighting.apply(shader);
         shader.setUniform("tintColor", new Vector3f(0f, 0f, 0f));
         shader.setUniform("tintAmt",  0f);
         shader.setUniform("glow",     1.0f);
