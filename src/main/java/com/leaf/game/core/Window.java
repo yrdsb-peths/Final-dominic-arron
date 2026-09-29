@@ -4394,6 +4394,8 @@ public class Window {
                 // Frustum culling uses the ACTUAL view matrix (including roll/shake)
                 Matrix4f renderMvp = new Matrix4f(projection).mul(view);
                 orbProjView.set(renderMvp);   // captured for the F7 cinematic overlay
+                shader.setUniform("invViewProj", new Matrix4f(renderMvp).invert());
+                shader.setUniform("screenSize", (float) fw[0], (float) fh[0]);
                 float[] frustumPlanes = extractFrustumPlanes(renderMvp);
 
                 // ── DAY/NIGHT SKY  -  gradient + sun + stars, behind everything ──
@@ -5009,7 +5011,6 @@ public class Window {
 
                     // ── CHARGE: a fiery triangular CONE forming, aimed where it fires.
                     //    White-hot tip -> deep-red base, growing + pulsing with charge. ──
-                    if (fxConeMesh == null) fxConeMesh = buildCone(22);
                     Matrix4f pvSC = new Matrix4f(projection).mul(view);
                     Vector3f look = camera.getLookDirection();
                     float scCx = stoneCanonGroundPos.x, scCy = riseY, scCz = stoneCanonGroundPos.z;
@@ -5021,15 +5022,32 @@ public class Window {
                     glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE);
                     glDepthMask(false); glDepthFunc(GL_LEQUAL); glDisable(GL_CULL_FACE);
                     shader.setUniform("emissiveMode", 1);
-                    // Outer fiery cone (gradient baked: white tip -> red base).
-                    orbDraw(shader, pvSC, fxConeMesh,
-                            faceMatrix(scCx, scCy, scCz, look.x, look.y, look.z).scale(coneRad, coneRad, coneLen),
-                            br, br, br);
-                    // Thin white-hot inner cone (the searing core).
-                    orbDraw(shader, pvSC, fxConeMesh,
-                            faceMatrix(scCx, scCy, scCz, look.x, look.y, look.z)
-                                    .scale(coneRad * 0.45f, coneRad * 0.45f, coneLen * 1.04f),
-                            br * 1.7f, br * 1.5f, br * 1.0f);
+                    // A gathering star of heat instead of a solid cone: a soft molten
+                    // glow stretched along the aim, a white-hot core, and embers
+                    // spiralling inward as the charge builds.
+                    if (fxGlowSphere == null) fxGlowSphere = buildNormalSphere(12, 18);
+                    Matrix4f aim = faceMatrix(scCx, scCy, scCz, look.x, look.y, look.z);
+                    orbDrawSoft(shader, pvSC, fxGlowSphere,
+                            new Matrix4f(aim).translate(0f, 0f, coneLen * 0.35f)
+                                    .scale(coneRad * 1.5f, coneRad * 1.5f, coneLen * 0.55f),
+                            br * 0.95f, br * 0.30f, br * 0.07f, 1);
+                    orbDrawSoft(shader, pvSC, fxGlowSphere,
+                            new Matrix4f(aim).scale(coneRad * 0.55f),
+                            br * 1.6f, br * 1.3f, br * 0.8f, 1);
+                    if (orbCyl == null) orbCyl = orbBuildCylinder(28);
+                    for (int k = 0; k < 8; k++) {
+                        float ph  = ((timeSecs2 * (0.7f + cp)) + k / 8f) % 1f;   // 0 far → 1 arrived
+                        float ang = k * 0.785f + timeSecs2 * 3f;
+                        float rad = coneRad * 3.2f * (1f - ph);
+                        float ex = scCx + (float) Math.cos(ang) * rad, ez = scCz + (float) Math.sin(ang) * rad;
+                        float ey = scCy + (float) Math.sin(ang * 1.7f) * rad * 0.5f;
+                        float dx = scCx - ex, dy = scCy - ey, dz = scCz - ez;
+                        float dl = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        if (dl < 0.05f) continue;
+                        float eb = (float) Math.sin(ph * Math.PI) * br * 1.4f;
+                        orbDraw(shader, pvSC, orbCyl, cylAlong(ex, ey, ez, dx / dl, dy / dl, dz / dl,
+                                Math.min(0.6f, dl), 0.025f), eb * 1.2f, eb * 0.6f, eb * 0.2f);
+                    }
                     shader.setUniform("emissiveMode", 0);
                     shader.setUniform("emissiveTint", new Vector3f(1f, 1f, 1f));
                     glDepthFunc(GL_LESS); glDepthMask(true); glDisable(GL_CULL_FACE); glDisable(GL_BLEND);

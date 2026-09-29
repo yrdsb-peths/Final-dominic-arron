@@ -216,13 +216,14 @@ public class CutsceneManager {
 
         ImFont font = ImGui.getFont();
         float base = ImGui.getFontSize();
+        ImFont story = UiFonts.display;   // Cinzel: carved, mythic small-caps for the narration
 
         String[] lines = script[slide];
         boolean titleSlide = lines.length > 0 && lines[0].equals("DESCENT");
 
         // Pre-measure block height so the text sits centred between the bars.
-        float bodySize  = base * 1.55f;
-        float titleSize = base * 3.6f;
+        float bodySize  = Math.max(24f, h * 0.040f);
+        float titleSize = Math.max(56f, h * 0.10f);
         float gap = 18f;
         float blockH = 0f;
         for (String line : lines) {
@@ -240,24 +241,23 @@ public class CutsceneManager {
             String shown = line.substring(0, take);
 
             if (!shown.isEmpty()) {
-                float ratio = size / base;
-                float tw = ImGui.calcTextSize(shown).x * ratio;
+                float tw = UiFonts.width(story, size, shown);
                 float x = (w - tw) * 0.5f;
                 if (t) {
                     // Glowing title: a soft pulsing halo drawn behind the crisp text.
                     float glow = 0.45f + 0.25f * (float) Math.sin(age * 2.2f);
                     int halo = ImGui.colorConvertFloat4ToU32(0.85f, 0.55f, 1.0f, glow);
                     for (int o = 1; o <= 3; o++) {
-                        draw.addText(font, size, x - o, y,     halo, shown);
-                        draw.addText(font, size, x + o, y,     halo, shown);
-                        draw.addText(font, size, x,     y - o, halo, shown);
-                        draw.addText(font, size, x,     y + o, halo, shown);
+                        draw.addText(story, size, x - o, y,     halo, shown);
+                        draw.addText(story, size, x + o, y,     halo, shown);
+                        draw.addText(story, size, x,     y - o, halo, shown);
+                        draw.addText(story, size, x,     y + o, halo, shown);
                     }
-                    draw.addText(font, size, x, y, ImGui.colorConvertFloat4ToU32(1f, 0.97f, 0.9f, 1f), shown);
+                    draw.addText(story, size, x, y, ImGui.colorConvertFloat4ToU32(1f, 0.90f, 0.62f, 1f), shown);
                 } else {
                     // Body: drop shadow + soft white for legibility over the world.
-                    draw.addText(font, size, x + 2, y + 2, ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.9f), shown);
-                    draw.addText(font, size, x, y, ImGui.colorConvertFloat4ToU32(0.93f, 0.95f, 1f, 1f), shown);
+                    draw.addText(story, size, x + 2, y + 2, ImGui.colorConvertFloat4ToU32(0f, 0f, 0f, 0.9f), shown);
+                    draw.addText(story, size, x, y, ImGui.colorConvertFloat4ToU32(0.94f, 0.90f, 0.84f, 1f), shown);
                 }
             }
             y += size + gap;

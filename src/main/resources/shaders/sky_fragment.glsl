@@ -199,6 +199,28 @@ vec3 aurora(vec3 ray, float nightAmt) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CLOUDS — a soft drifting layer projected onto a high plane. Two fbm lookups
+// (shape + a sun-ward offset for self-shadowing) give puffy tops and greyer
+// bellies; they take the sun's colour, so sunsets set them on fire.
+// ─────────────────────────────────────────────────────────────────────────────
+vec4 clouds(vec3 ray) {
+    if (ray.y < 0.015) return vec4(0.0);
+    vec2  uv   = ray.xz / (ray.y + 0.08) * 1.4 + vec2(time * 0.012, time * 0.004);
+    float n    = fbm(uv);
+    float cov  = smoothstep(0.50, 0.78, n);                // coverage: scattered cumulus
+    if (cov < 0.002) return vec4(0.0);
+    vec2  toSun = normalize(sunDir.xz + 1e-4) * 0.06;
+    float lit  = clamp((n - fbm(uv + toSun)) * 4.0 + 0.55, 0.25, 1.0);   // brighter on the sun side
+    float dayAmt = clamp(1.0 - nightFactor, 0.0, 1.0);
+    vec3  sunC = mix(vec3(1.0, 0.98, 0.95), vec3(1.0, 0.52, 0.30), sunsetFactor);
+    vec3  top  = mix(vec3(0.10, 0.12, 0.20), sunC, dayAmt);
+    vec3  belly= mix(vec3(0.04, 0.05, 0.10), mix(skyHorizon, vec3(0.55, 0.58, 0.68), 0.5), dayAmt);
+    vec3  c    = mix(belly, top, lit);
+    float fade = smoothstep(0.015, 0.20, ray.y);           // thin out toward the horizon
+    return vec4(c, cov * fade * mix(0.35, 0.92, dayAmt));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 void main() {
@@ -221,6 +243,7 @@ void main() {
     vec3  sunCol = mix(vec3(1.0, 0.96, 0.85), vec3(1.0, 0.45, 0.16), sunsetFactor);
     col += sunUp * (disc * 5.0 + glow) * sunCol;
 
+    vec4 cl = clouds(ray);
     if (ray.y > -0.05 && nightFactor > 0.05) {
         // Atmospheric extinction: smoothly fade all volumetric night sky features
         // to zero between 5 degrees above the horizon and slightly below it.
@@ -230,6 +253,8 @@ void main() {
         col += airglow(ray, nightFactor) * horizonFade;
         col += aurora(ray, nightFactor) * horizonFade;
     }
+
+    col = mix(col, cl.rgb, cl.a);            // clouds sit in front of stars & the sun glow
 
     if (lunarEclipseFactor > 0.01 && nightFactor > 0.5) {
         float et = lunarEclipseFactor * 0.04;

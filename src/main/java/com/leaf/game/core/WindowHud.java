@@ -37,7 +37,22 @@ class WindowHud {
      */
     private static final boolean DEV_MENU = false;
 
+    private final TitleScreen titleScreen = new TitleScreen();
+
     void renderConnectionMenu(float w, float h) {
+        if (!DEV_MENU) {
+            // Cinematic title (see TitleScreen). PLAY starts the guided, story-paced run.
+            if (titleScreen.render(w, h, ImGui.getIO().getDeltaTime(), (float) glfwGetTime())) {
+                win.network = null;
+                win.playIntroOnSpawn   = true;
+                win.armPlaytestOnSpawn = false;
+                win.gameEnded = false;
+                win.player.progression.reset();
+                RunRecords.INSTANCE.newRun((float) org.lwjgl.glfw.GLFW.glfwGetTime());
+                win.startPreload();
+            }
+            return;
+        }
         ImGui.setNextWindowPos(w / 2.0f - 170.0f, h / 2.0f - 130.0f);
         ImGui.setNextWindowSize(340.0f, DEV_MENU ? 400.0f : 240.0f);
         ImGui.begin("Start Screen",
@@ -120,17 +135,27 @@ class WindowHud {
     }
 
     void renderPreloadProgress(float w, float h) {
-        ImGui.setNextWindowPos(w / 2.0f - 160.0f, h / 2.0f - 65.0f);
-        ImGui.setNextWindowSize(320.0f, 130.0f);
-        ImGui.begin("Pre-generating Terrain",
-                imgui.flag.ImGuiWindowFlags.NoDecoration | imgui.flag.ImGuiWindowFlags.NoMove);
-        ImGui.text("Generating win.world in background...");
-        ImGui.text("Please wait a moment while the spawn");
-        ImGui.text("area finishes compiling...");
-        ImGui.spacing();
-        float progress = (float) (glfwGetTime() % 2.0) / 2.0f;
-        ImGui.progressBar(progress, 300, 24);
-        ImGui.end();
+        // Matches the title screen: dark valley, the crystal's glow, a slim
+        // indeterminate bar, and a line of lore while the spawn area generates.
+        imgui.ImDrawList dl = ImGui.getForegroundDrawList();
+        float t = (float) glfwGetTime();
+        dl.addRectFilledMultiColor(0, 0, w, h,
+                ImGui.colorConvertFloat4ToU32(0.03f, 0.02f, 0.08f, 1f), ImGui.colorConvertFloat4ToU32(0.03f, 0.02f, 0.08f, 1f),
+                ImGui.colorConvertFloat4ToU32(0.10f, 0.05f, 0.14f, 1f), ImGui.colorConvertFloat4ToU32(0.10f, 0.05f, 0.14f, 1f));
+        String head = "FORGING THE WORLD";
+        float hs = 34f, hw = UiFonts.width(UiFonts.display, hs, head);
+        dl.addText(UiFonts.display, hs, w / 2f - hw / 2f, h * 0.44f,
+                ImGui.colorConvertFloat4ToU32(1.0f, 0.86f, 0.52f, 1f), head);
+        float bw = Math.min(360f, w * 0.4f), bx = w / 2f - bw / 2f, by = h * 0.44f + 58f;
+        dl.addRectFilled(bx, by, bx + bw, by + 3f, ImGui.colorConvertFloat4ToU32(1f, 1f, 1f, 0.08f));
+        float p = (t * 0.45f) % 1f, seg = bw * 0.28f;
+        float s0 = bx + (bw + seg) * p - seg;
+        dl.addRectFilled(Math.max(bx, s0), by, Math.min(bx + bw, s0 + seg), by + 3f,
+                ImGui.colorConvertFloat4ToU32(0.72f, 0.52f, 1.0f, 0.95f));
+        String lore = "The crystal hums. Somewhere below, the mountain is waking.";
+        float ls = 18f, lw = UiFonts.width(UiFonts.body, ls, lore);
+        dl.addText(UiFonts.body, ls, w / 2f - lw / 2f, by + 22f,
+                ImGui.colorConvertFloat4ToU32(0.66f, 0.62f, 0.78f, 0.85f), lore);
     }
 
     // Slider value holders (imgui-java sliderFloat needs a float[1]); synced from AudioManager.
@@ -235,10 +260,10 @@ class WindowHud {
      * setWindowFontScale). Advances the layout cursor past the text.
      */
     private void cardCenterBig(String text, float scale, float r, float g, float b) {
-        ImFont font = ImGui.getFont();
+        ImFont font = UiFonts.bold;                     // crisp at large sizes (rasterised at 40px)
         float  base = ImGui.getFontSize();
         float  size = base * scale;
-        float  tw   = ImGui.calcTextSize(text).x * scale;
+        float  tw   = UiFonts.width(font, size, text);
         float  x = ImGui.getWindowPosX() + Math.max(8f, (ImGui.getWindowWidth() - tw) * 0.5f);
         float  y = ImGui.getCursorScreenPosY();
         ImGui.getWindowDrawList().addText(font, size, x, y,

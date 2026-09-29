@@ -114,6 +114,19 @@ uniform mat4  lightVP;
 uniform int   shadowOn;
 uniform float shadowTexel;   // world size of one shadow texel (for the normal-offset bias)
 
+// ── TRUE WORLD POSITION (from depth) ──────────────────────────────────────────
+// Many meshes (viewmodels, markers, tracers) are drawn in LOCAL space, so
+// vWorldPos for them is near the origin — which used to drop them into the
+// underground "abyss fog" and render them black. Reconstructing the position
+// from the depth buffer is exact for every mesh, whatever space it was built in.
+uniform mat4 invViewProj;
+uniform vec2 screenSize;
+vec3 fragWorldPos() {
+    vec3 ndc = vec3(gl_FragCoord.xy / screenSize, gl_FragCoord.z) * 2.0 - 1.0;
+    vec4 p = invViewProj * vec4(ndc, 1.0);
+    return p.xyz / p.w;
+}
+
 // ── WORLD CLOCK (seconds) — animates water ripples, lava flow, crystal glints ──
 uniform float uTime;
 
@@ -219,7 +232,7 @@ vec3 surfaceDetail(int style, vec3 wp, vec3 n) {
 float sunShadow(vec3 N, vec3 L) {
     if (shadowOn == 0) return 1.0;
     float ndl = max(dot(N, L), 0.0);
-    vec3  p   = vWorldPos + N * shadowTexel * (1.2 + 1.8 * (1.0 - ndl));
+    vec3  p   = fragWorldPos() + N * shadowTexel * (1.2 + 1.8 * (1.0 - ndl));
     vec4  lp  = lightVP * vec4(p, 1.0);
     vec3  sc  = lp.xyz / lp.w * 0.5 + 0.5;
     if (sc.z >= 1.0) return 1.0;
@@ -307,7 +320,8 @@ void main() {
 
     vec3  N       = normalize(vertexNormal);
     vec3  L       = normalize(sunDirection);
-    vec3  V       = normalize(camPos - vWorldPos);
+    vec3  WP      = fragWorldPos();          // true world position (see fragWorldPos)
+    vec3  V       = normalize(camPos - WP);
     float diffuse = max(0.0, dot(N, L));
 
     // ── HEMISPHERE AMBIENT + GROUND BOUNCE ────────────────────────────────────
@@ -397,7 +411,9 @@ void main() {
     if (style == STYLE_CRYSTAL) {
         float fres  = pow(1.0 - max(dot(N, V), 0.0), 3.0);
         vec3  px    = floor((vWorldPos - N * 0.01) * 16.0);
-        float twk   = step(0.992, hash13(px + floor(uTime * 3.0)));
+        // Twinkles only come out in the dark (by day they read as dead pixels).
+        float dark  = clamp(1.0 - (sunStrength * 0.9 + ambientStrength), 0.0, 1.0);
+        float twk   = step(0.996, hash13(px + floor(uTime * 3.0))) * dark;
         gammaCorrected += vertexColor.rgb * (0.10 + 0.35 * fres) + vec3(1.2) * twk;
     }
 
@@ -588,8 +604,8 @@ void main() {
     // same contrast. The last 30% of the render distance then fades fully into
     // the sky, hiding chunk edges. Emissive effects and the dome are exempt.
     if (emissiveMode == 0 && domeMode == 0 && isUnderwater == 0) {
-        float distToCam = length(vWorldPos - camPos);
-        vec3  ray       = normalize(vWorldPos - camPos);
+        float distToCam = length(WP - camPos);
+        vec3  ray       = normalize(WP - camPos);
 
         // Reconstruct the sky colour behind this pixel.
         float t = smoothstep(0.0, 0.55, ray.y);
@@ -602,13 +618,13 @@ void main() {
         vec3  hazeCol = skyCol + sunColor * sunAmt * sunStrength * 0.20;
 
         // Deep underground: the haze turns to pitch-black abyss instead of blue sky.
-        float depthFactor = smoothstep(190.0, 130.0, min(vWorldPos.y, camPos.y));
+        float depthFactor = smoothstep(190.0, 130.0, min(WP.y, camPos.y));
         vec3  abyssFogCol = vec3(0.012, 0.006, 0.022);
         skyCol  = mix(skyCol,  abyssFogCol, depthFactor);
         hazeCol = mix(hazeCol, abyssFogCol, depthFactor);
 
         // Height-weighted haze: valleys hold more of it than peaks.
-        float heightK = exp(-max(vWorldPos.y - 200.0, 0.0) * 0.012);
+        float heightK = exp(-max(WP.y - 200.0, 0.0) * 0.012);
         float haze    = (1.0 - exp(-distToCam * 0.0085 * (0.55 + 0.45 * heightK))) * 0.80;
         gammaCorrected = mix(gammaCorrected, hazeCol, haze);
 
