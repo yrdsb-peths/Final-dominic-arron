@@ -117,6 +117,11 @@ public class BlockTextureAtlas {
         return table[faceIndex];
     }
 
+    /** True when this block has real pixel art in the atlas (vs. the white fallback). */
+    public static boolean hasTexture(String texName) {
+        return texName != null && faceUVs.containsKey(texName);
+    }
+
     public static boolean isLoaded()     { return loaded;    }
     public static int     getTextureId() { return textureId; }
 

@@ -5,6 +5,13 @@ layout (location = 2) in vec3 aNormal;
 layout (location = 3) in vec2 aUV;     // UV coords — used by ModelMesh; zero-filled for regular Mesh
 
 uniform mat4 mvp;
+// Soft-glow FX (Window.orbDrawSoft): the model matrix, so the fragment shader can
+// see the effect's real world position + normal for its view-dependent falloff.
+uniform int  fxSoft;
+uniform mat4 fxModel;
+// Local-space meshes (viewmodels, props) set useModel=1 + fxModel so lighting,
+// shadows and fog see their true world position instead of the origin.
+uniform int  useModel;
 
 out vec4  vertexColor;
 out vec3  vertexNormal;
@@ -19,4 +26,8 @@ void main() {
     vWorldY      = aPos.y;   // vertices are stored in world-space coords
     vertexUV     = aUV;
     vWorldPos    = aPos;     // world-space coords (regular Mesh stores world coords)
+    if (fxSoft != 0 || useModel != 0) {
+        vWorldPos    = (fxModel * vec4(aPos, 1.0)).xyz;
+        vertexNormal = mat3(fxModel) * aNormal;
+    }
 }

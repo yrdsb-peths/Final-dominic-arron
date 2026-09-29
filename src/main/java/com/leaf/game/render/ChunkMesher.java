@@ -290,6 +290,14 @@ public class ChunkMesher {
             vs[i] = baseVs[srcIdx];
         }
 
+        // Untextured blocks: pack the procedural surface style into U (negative =
+        // "paint me in the shader"), so flat colours get pixel-art detail. See
+        // Block.surfaceStyle() and the STYLE_* branch in fragment.glsl.
+        if (!BlockTextureAtlas.hasTexture(block.texName)) {
+            float styleU = -(block.surfaceStyle() + 1.5f);
+            for (int i = 0; i < 4; i++) { us[i] = styleU; vs[i] = 0f; }
+        }
+
         // One shade for the whole block so all 6 faces match (a block is one rock).
         float shade = blockShade(wx, wy, wz);
 

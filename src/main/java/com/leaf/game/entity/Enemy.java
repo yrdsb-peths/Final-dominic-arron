@@ -229,13 +229,15 @@ public class Enemy {
     public boolean applyDamage(float amount) {
         if (!alive) return false;
         if (type == Type.GOLEM) amount *= GameConfig.golemSmashResist + (1f - GameConfig.golemSmashResist);
+        float before  = health;
         health        = Math.max(0f, health - amount);
         hitFlashTimer = 0.18f;
-        if (health <= 0f) {
-            alive = false;
-            return true;
-        }
-        return false;
+        boolean killed = health <= 0f;
+        if (killed) alive = false;
+        // Sparks, damage numbers, hit-stop — see core.CombatFeedback.
+        com.leaf.game.core.CombatFeedback.publish(id, position.x, position.y + halfHeight,
+                position.z, halfHeight, before - health, killed);
+        return killed;
     }
 
     public void applyKnockback(float kx, float ky, float kz) {

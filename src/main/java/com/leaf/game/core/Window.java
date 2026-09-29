@@ -553,6 +553,10 @@ public class Window {
     private float   orbFlashAmt     = 0f;   // environmental white flash (0..~1.7)
     private boolean orbDark         = false;// true = real lighting blackout (sun/ambient/sky -> black)
     private com.leaf.game.render.Shader bloomShader = null; // searing-bloom post-process
+    /** Directional sun/moon shadow map (see render/ShadowMap.java). */
+    private com.leaf.game.render.ShadowMap shadowMap = null;
+    /** Final full-screen pass: HDR bloom pyramid + colour grade (see render/PostFx.java). */
+    private com.leaf.game.render.PostFx postFx = null;
     private com.leaf.game.render.Shader skyShader   = null; // procedural day/night sky
     private com.leaf.game.render.Shader moonShader  = null; // 3D moon sphere
     private com.leaf.game.render.Mesh   moonMesh    = null;
@@ -560,6 +564,8 @@ public class Window {
     private int  constellVao = 0, constellVbo = 0;
     private int  constellLineCount = 0;
     boolean showConstellations = false;  // toggle with F2
+    /** /hud toggles this: hides every HUD element for clean screenshots / trailer capture. */
+    boolean hudHidden = false;
     boolean showSnowAtmos      = true;   // toggle with '='
     private boolean lastConstellKey    = false;
     private boolean lastSnowToggleKey  = false;
@@ -711,7 +717,8 @@ public class Window {
     // Transient additive 3D effects shared by many abilities (slash crescents,
     // shockwave rings, burst spheres, energy bolts). Rendered in the world pass
     // through the bloom FBO. Spawn via fxSlash / fxRing / fxBurst / fxBolt.
-    private static final int FX_CRESCENT = 0, FX_RING = 1, FX_BURST = 2, FX_BOLT = 3;
+    private static final int FX_CRESCENT = 0, FX_RING = 1, FX_BURST = 2, FX_BOLT = 3,
+                             FX_SPARK = 4;   // local-only impact spark (never broadcast)
     private static final class Fx {
         int   type;
         float x, y, z;          // world position
@@ -720,11 +727,23 @@ public class Window {
         float age, life;
         float s0, s1;           // start/end scale (or radius)
         float r, g, b;          // emissive colour (HDR)
+        float vx, vy, vz;       // FX_SPARK velocity (blocks/s)
         boolean ambient;        // true = decorative living-world particle (does NOT
                                 // trigger the full-screen bloom FBO; see doFxBloom)
         Fx(int type, float x, float y, float z) { this.type = type; this.x = x; this.y = y; this.z = z; }
     }
     private final java.util.ArrayList<Fx> fxList = new java.util.ArrayList<>();
+
+    // ── COMBAT FEEDBACK: sparks, floating damage numbers, hit-stop ────────────
+    // Fed by core.CombatFeedback (published from Enemy.applyDamage), so every
+    // ability gets the same impact language without knowing about it.
+    private static final class DamageNumber {
+        int enemyId; float x, y, z; float amount; float age; float pop; boolean killed;
+    }
+    private final java.util.ArrayList<DamageNumber> damageNumbers = new java.util.ArrayList<>();
+    private final java.util.HashMap<Integer, Float> sparkCooldown = new java.util.HashMap<>();
+    private float hitStopCooldown = 0f;
+    private com.leaf.game.render.Mesh fxGlowSphere;   // sphere WITH normals, for soft glow orbs
     /** While true, FX spawned via fxBolt/fxRing/etc. are tagged decorative (ambient)
      *  so they don't trigger the full-screen bloom FBO. Set around the ambience loop. */
     private boolean fxSpawnAmbient = false;
@@ -1098,6 +1117,7 @@ public class Window {
         glfwShowWindow(window);
 
         ImGui.createContext();
+        UiFonts.load();          // Rajdhani HUD + Cinzel display type (before the font atlas is built)
         imguiGlfw.init(window, true);
     }
 
@@ -1514,6 +1534,11 @@ public class Window {
         glClearColor(0.5f, 0.7f, 0.9f, 1.0f);
 
         Shader shader = new Shader("src/main/resources/shaders/vertex.glsl", "src/main/resources/shaders/fragment.glsl");
+        shadowMap = new com.leaf.game.render.ShadowMap(GameConfig.shadowMapSize, GameConfig.shadowRadius, 260f);
+        shadowMap.init();
+        shader.bind();
+        shader.setUniform("shadowMap", com.leaf.game.render.ShadowMap.TEXTURE_UNIT);
+        shader.unbind();
         KeyBindings.verify();
 
         distortShader = new com.leaf.game.render.Shader("src/main/resources/shaders/distort_vertex.glsl", "src/main/resources/shaders/distort_fragment.glsl");
@@ -1574,6 +1599,8 @@ public class Window {
         org.lwjgl.opengl.GL20.glVertexAttribPointer(1, 2, GL_FLOAT, false, 4*4, 2L*4);
         org.lwjgl.opengl.GL20.glEnableVertexAttribArray(1);
         org.lwjgl.opengl.GL30.glBindVertexArray(0);
+        postFx = new com.leaf.game.render.PostFx();
+        postFx.init(kamuiScreenQuad);
 
         camera = new Camera();
         setupMouseLook(camera);
@@ -2258,6 +2285,7 @@ public class Window {
                         // THE WORLD: time is frozen -> enemies and their projectiles
                         // stop dead while the player keeps moving (dt=0 freezes them).
                         enemyManager.update(timeStopActive ? 0f : deltaTime, world, player.position);
+                        processCombatFeedback(rawDeltaTime);
 
                         // ── INFERNO TOWER: eruption VFX (queued by EnemyManager) ──
                         // A fireball launches from the tower mouth, streaks to the landing
@@ -3987,7 +4015,37 @@ public class Window {
                     || doFxBloom || doStoneBloom;
             // Quantum Bullet's surface warp routes the scene through the distort pass.
             boolean doQuantumWarp = qbWarpStrength > 0.01f && distortShader != null && !isPreloading;
-            boolean useSceneFbo = doKamuiDistort || doBloom || doQuantumWarp;
+            // With post-processing on, every frame renders into the HDR scene FBO and
+            // goes through PostFx (bloom + grade). Kamui / quantum warp keep their
+            // own distortion passes.
+            boolean doPostFx = GameConfig.postFx && postFx != null && networkInitialized && !isPreloading;
+            boolean useSceneFbo = doKamuiDistort || doBloom || doQuantumWarp || doPostFx;
+
+            // ── SUN / MOON SHADOW MAP ─────────────────────────────────────────
+            // Depth-only terrain pass from the light's point of view. Runs before
+            // the scene FBO is bound; end(0) hands the default framebuffer back.
+            boolean shadowsLive = false;
+            if (networkInitialized && !isPreloading && GameConfig.shadows && shadowMap != null
+                    && dayNight.lightStrength > 0.04f && dayNight.lightDir.y > 0.03f
+                    && !(orbitalActive && orbDark)
+                    && shadowMap.begin(dayNight.lightDir, player.position)) {
+                int scx = Math.floorDiv((int) Math.floor(player.position.x), Chunk.SIZE);
+                int scz = Math.floorDiv((int) Math.floor(player.position.z), Chunk.SIZE);
+                int scy = Math.floorDiv((int) player.position.y, Chunk.HEIGHT);
+                int sr  = (int) Math.ceil(GameConfig.shadowRadius / Chunk.SIZE) + 1;
+                for (int dx = -sr; dx <= sr; dx++) {
+                    for (int dz = -sr; dz <= sr; dz++) {
+                        for (int cy = Math.max(0, scy + 1); cy >= Math.min(scy - 4, -4); cy--) {
+                            Chunk sc = world.getChunk(scx + dx, cy, scz + dz);
+                            if (sc == null) continue;
+                            if (sc.opaqueMesh != null)      sc.opaqueMesh.render();
+                            if (sc.transparentMesh != null) sc.transparentMesh.render();  // leaves shade too
+                        }
+                    }
+                }
+                shadowMap.end(0);
+                shadowsLive = true;
+            }
             if (useSceneFbo) {
                 // Recreate the FBO whenever the window is resized or on first use
                 // CRITICAL FIX: Use physical framebuffer size (fw, fh) for FBO on Retina/High-DPI displays!
@@ -4007,11 +4065,12 @@ public class Window {
                     // Color texture attachment
                     org.lwjgl.opengl.GL11.glBindTexture(
                             org.lwjgl.opengl.GL11.GL_TEXTURE_2D, kamuiFboTex);
+                    // HDR (half-float) so emissive light can exceed 1.0 and bloom properly.
                     org.lwjgl.opengl.GL11.glTexImage2D(
                             org.lwjgl.opengl.GL11.GL_TEXTURE_2D, 0,
-                            org.lwjgl.opengl.GL11.GL_RGB, fw[0], fh[0], 0,
-                            org.lwjgl.opengl.GL11.GL_RGB,
-                            org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE,
+                            org.lwjgl.opengl.GL30.GL_RGBA16F, fw[0], fh[0], 0,
+                            org.lwjgl.opengl.GL11.GL_RGBA,
+                            org.lwjgl.opengl.GL11.GL_FLOAT,
                             (java.nio.ByteBuffer) null);
                     org.lwjgl.opengl.GL11.glTexParameteri(
                             org.lwjgl.opengl.GL11.GL_TEXTURE_2D,
@@ -4112,6 +4171,14 @@ public class Window {
                 shader.setUniform("isUnderwater", isCameraUnderwater ? 1 : 0);
                 shader.setUniform("camPos", new Vector3f(camera.position.x, camera.position.y, camera.position.z));
                 shader.setUniform("domeMode", 0);   // off  -  the dome is now real tube geometry, not a shader fill
+                shader.setUniform("uTime", (float) glfwGetTime());   // water ripples, lava flow, glints
+                // Shadow map (always keep a depth texture on its unit so the sampler is valid).
+                if (shadowMap != null) {
+                    shadowMap.bindForSampling();
+                    shader.setUniform("lightVP", shadowMap.lightVP());
+                    shader.setUniform("shadowTexel", shadowMap.texelWorld());
+                }
+                shader.setUniform("shadowOn", shadowsLive ? 1 : 0);
 
                 // ── SNOW BIOME ATMOSPHERE ─────────────────────────────────────
                 // Fades in as the player climbs into snow-mountain altitude.
@@ -5150,33 +5217,17 @@ public class Window {
                     org.lwjgl.opengl.GL30.glBindVertexArray(0);
                     glEnable(GL_DEPTH_TEST);
                     distortShader.unbind();
-                } else if (doBloom) {
-                    // ── SEARING-BLOOM POST-PROCESS (orbital strike OR radar) ──
-                    // Bleed the emissive scan lines + laser flash into the dark.
-                    org.lwjgl.opengl.GL30.glBindFramebuffer(
-                            org.lwjgl.opengl.GL30.GL_FRAMEBUFFER, 0);
-                    glClear(GL_COLOR_BUFFER_BIT);
-
-                    bloomShader.bind();
-                    bloomShader.setUniform("screenTexture", 0);
-                    bloomShader.setUniform("texel",
-                            1f / Math.max(1, fw[0]), 1f / Math.max(1, fh[0]));
-                    bloomShader.setUniform("bloomStrength", 1.7f);
-                    // Domain strike flash overlay (0 when domain is inactive  -  safe to always set)
-                    bloomShader.setUniform("depStrike", depStrike);
-                    bloomShader.setUniform("threshold", 0.65f);
-
-                    org.lwjgl.opengl.GL13.glActiveTexture(org.lwjgl.opengl.GL13.GL_TEXTURE0);
-                    org.lwjgl.opengl.GL11.glBindTexture(
-                            org.lwjgl.opengl.GL11.GL_TEXTURE_2D, kamuiFboTex);
-
-                    glDisable(GL_DEPTH_TEST);
-                    org.lwjgl.opengl.GL30.glBindVertexArray(kamuiScreenQuad);
-                    glDrawArrays(GL_TRIANGLES, 0, 6);
-                    org.lwjgl.opengl.GL30.glBindVertexArray(0);
-                    glEnable(GL_DEPTH_TEST);
-
-                    bloomShader.unbind();
+                } else if (useSceneFbo) {
+                    // ── BLOOM + GRADE (every frame) ────────────────────────────
+                    // Ability cinematics (orbital, radar, domain, disco, big FX)
+                    // lower the threshold and push the glow so their emissive energy
+                    // sears; otherwise only true HDR emitters (lava, glints) bloom.
+                    postFx.apply(kamuiFboTex, fw[0], fh[0],
+                            1.0f,                          // only true HDR emitters glow
+                            doBloom ? 0.45f : 0.30f,       // restrained: a halo, never a wash
+                            depActive ? depStrike : 0f,
+                            GameConfig.vignette,
+                            (float) glfwGetTime());
                 }
             }
 
@@ -5192,7 +5243,11 @@ public class Window {
                 } else if (cutscene.isActive()) {
                     // Cutscene takes over the screen (world still renders behind, dimmed).
                     cutscene.render((float) ww[0], (float) wh[0]);
+                } else if (hudHidden && !showChat) {
+                    // Clean-frame mode (/hud): world + combat text only, for screenshots & trailers.
+                    renderDamageNumbers(ww[0], wh[0]);
                 } else {
+                    renderDamageNumbers(ww[0], wh[0]);
                     hud.renderHUD(camera, ww[0], wh[0]);
                     hud.renderTargetCracks(camera, ww[0], wh[0]);
                     if (showDebug)       hud.renderDebugMenu();
@@ -6263,6 +6318,45 @@ public class Window {
         m.render();
     }
 
+    /**
+     * Emissive draw with a view-dependent glow profile. The mesh must carry real
+     * normals (see {@link #buildNormalSphere}). mode 1 = soft core (bright centre,
+     * edges fade out — a glowing orb); mode 2 = fresnel rim (a shock shell).
+     */
+    private void orbDrawSoft(com.leaf.game.render.Shader shader, Matrix4f pv,
+                             com.leaf.game.render.Mesh m, Matrix4f model,
+                             float r, float g, float b, int mode) {
+        shader.setUniform("fxModel", model);
+        shader.setUniform("fxSoft", mode);
+        orbDraw(shader, pv, m, model, r, g, b);
+        shader.setUniform("fxSoft", 0);
+    }
+
+    /** Unit sphere whose normals point outward (orbBuildSphere's are all +Y). */
+    private com.leaf.game.render.Mesh buildNormalSphere(int rings, int sectors) {
+        float[] v = new float[(rings + 1) * (sectors + 1) * 10];
+        int vi = 0;
+        for (int i = 0; i <= rings; i++) {
+            double lat = Math.PI * i / rings, y = Math.cos(lat), rr = Math.sin(lat);
+            for (int j = 0; j <= sectors; j++) {
+                double lon = 2 * Math.PI * j / sectors;
+                float px = (float) (rr * Math.cos(lon)), py = (float) y, pz = (float) (rr * Math.sin(lon));
+                int o = (vi++) * 10;
+                v[o] = px; v[o+1] = py; v[o+2] = pz;
+                v[o+3] = 1; v[o+4] = 1; v[o+5] = 1; v[o+6] = 1;
+                v[o+7] = px; v[o+8] = py; v[o+9] = pz;
+            }
+        }
+        int[] idx = new int[rings * sectors * 6];
+        int ii = 0, stride = sectors + 1;
+        for (int i = 0; i < rings; i++)
+            for (int j = 0; j < sectors; j++) {
+                int a = i * stride + j, b = a + stride;
+                idx[ii++] = a; idx[ii++] = b; idx[ii++] = a + 1; idx[ii++] = a + 1; idx[ii++] = b; idx[ii++] = b + 1;
+            }
+        return new com.leaf.game.render.Mesh(v, idx);
+    }
+
     /** Radar 3D layer: a soft vertical "arm" curtain sweeping around (opaque->
      *  transparent afterglow) + a small centre pylon. The flat ground sweep, rings
      *  and spokes live in the terrain shader; enemies are wireframed in the enemy
@@ -7288,8 +7382,8 @@ public class Window {
                                         com.leaf.game.util.Camera camera) {
         if (hotbar[selectedSlot] != Block.GATLING_GUN || player.debugMode
                 || player.stand.isInStandPerspective()) return;
-        if (gunBodyMesh   == null) gunBodyMesh   = buildColorCube(0.16f, 0.16f, 0.20f);  // gunmetal
-        if (gunBarrelMesh == null) gunBarrelMesh = buildColorCube(0.34f, 0.34f, 0.40f);  // steel
+        if (gunBodyMesh   == null) gunBodyMesh   = buildColorCube(0.24f, 0.24f, 0.29f);  // gunmetal
+        if (gunBarrelMesh == null) gunBarrelMesh = buildColorCube(0.52f, 0.52f, 0.58f);  // steel
 
         Vector3f look  = camera.getLookDirection();
         Vector3f right = camera.getRight();
@@ -7306,18 +7400,26 @@ public class Window {
 
         glDisable(GL_DEPTH_TEST);   // weapon always drawn on top of the world
 
+        // World-space model matrices so the gun is lit, shadowed and fogged like
+        // the world around it (it used to fall into the "abyss fog" and render black).
+        shader.setUniform("useModel", 1);
         // Body
-        shader.setUniform("mvp", new Matrix4f(pvb).mul(
-                new Matrix4f().translate(0f, 0f, -0.02f).scale(0.10f, 0.10f, 0.34f)));
+        Matrix4f bodyM = new Matrix4f(basis).mul(
+                new Matrix4f().translate(0f, 0f, -0.02f).scale(0.10f, 0.10f, 0.34f));
+        shader.setUniform("fxModel", bodyM);
+        shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(bodyM));
         gunBodyMesh.render();
         // 6 spinning barrels in a ring around the −Z axis
         for (int k = 0; k < 6; k++) {
             float a = barrelSpin + k * (float)(Math.PI / 3);
             float ox = (float)Math.cos(a) * 0.055f, oy = (float)Math.sin(a) * 0.055f;
-            shader.setUniform("mvp", new Matrix4f(pvb).mul(
-                    new Matrix4f().translate(ox, oy, -0.22f).scale(0.022f, 0.022f, 0.42f)));
+            Matrix4f barrelM = new Matrix4f(basis).mul(
+                    new Matrix4f().translate(ox, oy, -0.22f).scale(0.022f, 0.022f, 0.42f));
+            shader.setUniform("fxModel", barrelM);
+            shader.setUniform("mvp", new Matrix4f(projection).mul(view).mul(barrelM));
             gunBarrelMesh.render();
         }
+        shader.setUniform("useModel", 0);
         // Muzzle flash (bright emissive burst at the barrel tip just after firing)
         if (gatlingFlash > 0f) {
             if (orbSphere == null) orbSphere = orbBuildSphere(14, 20);
@@ -7641,8 +7743,148 @@ public class Window {
     }
 
     private void updateFx(float dt) {
+        dt *= GameConfig.fxTimeScale;   // dev: /fxslow slows only the VFX (for capture & tuning)
         for (java.util.Iterator<Fx> it = fxList.iterator(); it.hasNext(); ) {
-            Fx e = it.next(); e.age += dt; if (e.age >= e.life) it.remove();
+            Fx e = it.next(); e.age += dt; if (e.age >= e.life) { it.remove(); continue; }
+            if (e.type == FX_SPARK) {
+                e.x += e.vx * dt; e.y += e.vy * dt; e.z += e.vz * dt;
+                e.vy -= 24f * dt;                               // gravity arcs the streak
+                float drag = Math.max(0f, 1f - 2.2f * dt);
+                e.vx *= drag; e.vy *= drag; e.vz *= drag;
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  COMBAT FEEDBACK — turns every enemy hit into sparks, a damage number,
+    //  and (for heavy hits / kills) a couple of frames of hit-stop.
+    // ═════════════════════════════════════════════════════════════════════════
+    private void processCombatFeedback(float rawDt) {
+        hitStopCooldown -= rawDt;
+        for (java.util.Iterator<DamageNumber> it = damageNumbers.iterator(); it.hasNext(); ) {
+            DamageNumber d = it.next();
+            d.age += rawDt;
+            d.pop = Math.max(0f, d.pop - rawDt * 5f);
+            if (d.age > 1.15f) it.remove();
+        }
+        if (!sparkCooldown.isEmpty()) {
+            sparkCooldown.replaceAll((k, v) -> v - rawDt);
+            sparkCooldown.values().removeIf(v -> v <= 0f);
+        }
+
+        for (CombatFeedback.Hit h : CombatFeedback.drain()) {
+            // ── Damage number: DoT ticks on the same enemy merge into one rising number.
+            DamageNumber live = null;
+            for (DamageNumber d : damageNumbers) {
+                if (d.enemyId == h.enemyId && d.age < 0.45f && !d.killed) { live = d; break; }
+            }
+            if (live == null) {
+                live = new DamageNumber();
+                live.enemyId = h.enemyId;
+                live.x = h.x + (float) (Math.random() - 0.5) * 0.6f;
+                live.y = h.y + h.halfHeight + 0.3f;
+                live.z = h.z + (float) (Math.random() - 0.5) * 0.6f;
+                damageNumbers.add(live);
+            } else {
+                live.age = Math.min(live.age, 0.12f);           // keep it alive while ticking
+            }
+            live.amount += h.amount;
+            live.pop = 1f;
+            if (h.killed) live.killed = true;
+
+            // ── Sparks (throttled per enemy so a beam doesn't spray a fountain).
+            if (h.killed || !sparkCooldown.containsKey(h.enemyId)) {
+                spawnHitSparks(h);
+                sparkCooldown.put(h.enemyId, 0.09f);
+            }
+            if (h.killed) spawnKillBurst(h);
+
+            // ── Hit-stop: only for blows with weight, and never back-to-back.
+            if (hitStopCooldown <= 0f && (h.killed || h.amount >= 40f)) {
+                ScreenEffectManager.INSTANCE.hitStopSeconds(h.killed ? 0.07f : 0.04f);
+                hitStopCooldown = 0.28f;
+                if (h.killed && smashShakeTimer < 0.1f) {        // tiny kick on a kill
+                    activeShakeDuration  = 0.12f;
+                    activeShakeAmplitude = 0.07f;
+                    smashShakeTimer = 0.12f;
+                }
+            }
+        }
+    }
+
+    /** A spray of hot streaks leaving the enemy, away from the player. */
+    private void spawnHitSparks(CombatFeedback.Hit h) {
+        float ax = h.x - player.position.x, az = h.z - player.position.z;
+        float al = (float) Math.sqrt(ax * ax + az * az);
+        if (al < 1e-3f) { ax = 1f; az = 0f; al = 1f; }
+        ax /= al; az /= al;
+        int n = Math.min(14, 5 + (int) (h.amount / 12f)) + (h.killed ? 6 : 0);
+        for (int i = 0; i < n; i++) {
+            Fx e = new Fx(FX_SPARK, h.x, h.y, h.z);
+            float spread = 1.1f;
+            float dx = ax + (float) (Math.random() - 0.5) * 2f * spread;
+            float dz = az + (float) (Math.random() - 0.5) * 2f * spread;
+            float dy = 0.35f + (float) Math.random() * 0.9f;
+            float dl = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+            float sp = 9f + (float) Math.random() * 11f;
+            e.vx = dx / dl * sp; e.vy = dy / dl * sp; e.vz = dz / dl * sp;
+            e.life = 0.22f + (float) Math.random() * 0.25f;
+            e.s0 = 0.8f + (float) Math.random() * 0.6f;       // thickness multiplier
+            // white-hot core fading to amber
+            float t = (float) Math.random();
+            e.r = 2.0f; e.g = 1.1f + 0.6f * t; e.b = 0.4f + 0.5f * t;
+            e.ambient = true;                                   // cosmetic; no bloom-mode switch
+            fxList.add(e);
+        }
+    }
+
+    /** Death: a soft flash orb + a fast shock ring on the ground plane. */
+    private void spawnKillBurst(CombatFeedback.Hit h) {
+        float size = Math.max(0.8f, h.halfHeight);
+        Fx orb = new Fx(FX_BURST, h.x, h.y, h.z);
+        orb.s0 = 0.3f * size; orb.s1 = 1.9f * size; orb.life = 0.22f;
+        orb.r = 1.1f; orb.g = 0.8f; orb.b = 0.55f; orb.ambient = true;
+        fxList.add(orb);
+        Fx ring = new Fx(FX_RING, h.x, h.y - h.halfHeight + 0.15f, h.z);
+        ring.dx = 0; ring.dy = 1; ring.dz = 0;
+        ring.s0 = 0.4f * size; ring.s1 = 3.2f * size; ring.life = 0.32f;
+        ring.r = 0.7f; ring.g = 0.5f; ring.b = 0.3f; ring.ambient = true;
+        fxList.add(ring);
+    }
+
+    /** Floating damage numbers, drawn over the world in the HUD pass. */
+    private void renderDamageNumbers(int w, int h) {
+        if (damageNumbers.isEmpty()) return;
+        imgui.ImDrawList draw = ImGui.getBackgroundDrawList();
+        org.joml.Vector4f p = new org.joml.Vector4f();
+        for (DamageNumber d : damageNumbers) {
+            float rise = d.age * 1.4f;
+            p.set(d.x, d.y + rise, d.z, 1f);
+            orbProjView.transform(p);
+            if (p.w <= 0.1f) continue;
+            float sx = (p.x / p.w * 0.5f + 0.5f) * w;
+            float sy = (1f - (p.y / p.w * 0.5f + 0.5f)) * h;
+            float dist = p.w;
+            float fade = d.age < 0.7f ? 1f : Math.max(0f, 1f - (d.age - 0.7f) / 0.45f);
+            if (fade <= 0f) continue;
+
+            boolean big = d.amount >= 60f || d.killed;
+            float base = (big ? 34f : 25f) * Math.max(0.55f, Math.min(1.25f, 14f / Math.max(4f, dist)));
+            float size = base * (1f + 0.45f * d.pop * d.pop);
+            String txt = String.valueOf(Math.max(1, Math.round(d.amount)));
+            float tw = UiFonts.width(UiFonts.bold, size, txt);
+            float x = sx - tw / 2f, y = sy - size / 2f;
+
+            float r, g, b;
+            if (d.killed)   { r = 1.00f; g = 0.36f; b = 0.22f; }   // crimson finisher
+            else if (big)   { r = 1.00f; g = 0.80f; b = 0.25f; }   // gold heavy hit
+            else            { r = 1.00f; g = 0.97f; b = 0.90f; }   // warm white
+            int shadow = ImGui.colorConvertFloat4ToU32(0.05f, 0.03f, 0.08f, 0.85f * fade);
+            int col    = ImGui.colorConvertFloat4ToU32(r, g, b, fade);
+            for (int ox = -2; ox <= 2; ox += 2)
+                for (int oy = -2; oy <= 2; oy += 2)
+                    if (ox != 0 || oy != 0) draw.addText(UiFonts.bold, size, x + ox, y + oy, shadow, txt);
+            draw.addText(UiFonts.bold, size, x, y, col, txt);
         }
     }
 
@@ -7689,9 +7931,11 @@ public class Window {
      * shockwaves, and chaotic branching tendrils. Layered over the 2D bolt.
      */
     private void fxLightningStrike(float x, float y, float z) {
-        // Main shaft  -  thick electric-blue body with a white-hot core.
-        fxBolt(x, y, z, 0f, 1f, 0f, 44f, 0.55f, 0.42f, 1.5f, 2.2f, 3.9f);  // blue body
-        fxBolt(x, y, z, 0f, 1f, 0f, 44f, 0.22f, 0.42f, 3.4f, 3.4f, 3.6f);  // white core
+        // Main channel: a jagged, forking 3D bolt from the sky (midpoint displacement),
+        // violet glow sheath around a white-hot core.
+        java.util.Random rng = new java.util.Random();
+        fxJaggedBolt(rng, x + (rng.nextFloat() - 0.5f) * 6f, y + 44f, z + (rng.nextFloat() - 0.5f) * 6f,
+                x, y, z, 0.20f, 0.46f, 6, 5);
         // Sky-ring portal/lens high above, from which the bolt descends.
         fxRing(x, y + 40f, z, 5.0f, 7.5f, 0.55f, 1.4f, 0.5f, 2.8f);        // violet ring
         // Blinding impact eruption + ground shockwaves.
@@ -7710,7 +7954,61 @@ public class Window {
         }
         smashShakeTimer = Math.max(smashShakeTimer, 0.2f);
         activeShakeAmplitude = 0.16f; activeShakeDuration = 0.22f;
-        ScreenEffectManager.INSTANCE.flash(0.7f, 0.6f, 1.0f, 0.4f, 0.18f);
+        ScreenEffectManager.INSTANCE.flash(0.7f, 0.6f, 1.0f, 0.14f, 0.12f);
+    }
+
+    /**
+     * A forking lightning channel between two points. Built by recursive midpoint
+     * displacement (the classic fractal-lightning trick): each pass splits every
+     * segment and kicks the midpoint sideways, giving the crooked, self-similar
+     * path of a real bolt. Some vertices sprout thinner, shorter branches.
+     *
+     * @param generations subdivision passes (6 → 64 segments)
+     * @param branches    how many forks to sprout along the main channel
+     */
+    private void fxJaggedBolt(java.util.Random rng, float x0, float y0, float z0,
+                              float x1, float y1, float z1,
+                              float core, float life, int generations, int branches) {
+        java.util.ArrayList<float[]> pts = new java.util.ArrayList<>();
+        pts.add(new float[]{x0, y0, z0});
+        pts.add(new float[]{x1, y1, z1});
+        float len = (float) Math.sqrt((x1-x0)*(x1-x0) + (y1-y0)*(y1-y0) + (z1-z0)*(z1-z0));
+        float kick = len * 0.16f;
+        for (int g = 0; g < generations; g++) {
+            java.util.ArrayList<float[]> next = new java.util.ArrayList<>(pts.size() * 2);
+            for (int i = 0; i < pts.size() - 1; i++) {
+                float[] a = pts.get(i), b = pts.get(i + 1);
+                next.add(a);
+                next.add(new float[]{
+                        (a[0] + b[0]) * 0.5f + (rng.nextFloat() - 0.5f) * 2f * kick,
+                        (a[1] + b[1]) * 0.5f + (rng.nextFloat() - 0.5f) * 0.6f * kick,
+                        (a[2] + b[2]) * 0.5f + (rng.nextFloat() - 0.5f) * 2f * kick});
+            }
+            next.add(pts.get(pts.size() - 1));
+            pts = next;
+            kick *= 0.52f;
+        }
+        for (int i = 0; i < pts.size() - 1; i++) {
+            float[] a = pts.get(i), b = pts.get(i + 1);
+            float dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+            float l = (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
+            if (l < 1e-3f) continue;
+            float taper = 0.55f + 0.45f * (float) i / pts.size();     // thickens toward the strike
+            fxBolt(a[0], a[1], a[2], dx/l, dy/l, dz/l, l, core * 2.6f * taper, life, 0.9f, 0.9f, 2.6f); // violet sheath
+            fxBolt(a[0], a[1], a[2], dx/l, dy/l, dz/l, l, core * taper,        life, 2.6f, 2.7f, 3.4f); // white core
+        }
+        // Forks: shorter, thinner bolts peeling off the channel's upper two-thirds.
+        for (int k = 0; k < branches && pts.size() > 4; k++) {
+            int i = 1 + rng.nextInt(Math.max(1, pts.size() * 2 / 3));
+            float[] a = pts.get(i);
+            float bl = len * (0.12f + rng.nextFloat() * 0.18f);
+            double ang = rng.nextDouble() * Math.PI * 2.0;
+            float bx = a[0] + (float) Math.cos(ang) * bl * 0.8f;
+            float bz = a[2] + (float) Math.sin(ang) * bl * 0.8f;
+            float by = a[1] - bl * (0.4f + rng.nextFloat() * 0.5f);
+            fxJaggedBolt(rng, a[0], a[1], a[2], bx, by, bz, core * 0.45f, life * 0.8f,
+                    Math.max(3, generations - 2), 0);
+        }
     }
 
     /** A restrained, cool teleport flourish  -  concentric rings + a slim shimmer
@@ -7727,8 +8025,19 @@ public class Window {
      *  warm, dim trailing body  -  so a slash reads as a powerful 3D blade, not a flat
      *  white shape. (Colour comes from this gradient × the per-slash emissive tint.) */
     private com.leaf.game.render.Mesh buildFxCrescent(int seg) {
-        final float A = 1.22f, R = 1.0f, wMax = 0.16f;
-        float[] v = new float[(seg + 1) * 2 * 10];
+        // A feathered energy blade, drawn additively. Four rows across the width:
+        //   inner feather (black = invisible) → amber body → white-hot leading edge
+        //   → outer feather. Both edges fade to nothing, so it reads as light, not
+        //   as a solid banana-shaped plate.
+        final float A = 1.22f, R = 1.0f, wMax = 0.22f;
+        final float[] off = { -1.0f, -0.25f, 0.55f, 0.85f };   // across-width offsets (× w)
+        final float[][] col = {
+                { 0.00f, 0.00f, 0.00f },     // inner feather
+                { 0.95f, 0.46f, 0.12f },     // amber body
+                { 1.00f, 0.96f, 0.84f },     // white-hot edge
+                { 0.00f, 0.00f, 0.00f } };   // outer feather
+        final int rows = off.length;
+        float[] v = new float[(seg + 1) * rows * 10];
         int vi = 0;
         for (int i = 0; i <= seg; i++) {
             float t = (float) i / seg;
@@ -7736,25 +8045,24 @@ public class Window {
             float dirX = (float) Math.sin(a), dirY = (float) Math.cos(a);
             float taper = (float) Math.pow(Math.max(0f, 1f - (a / A) * (a / A)), 0.6);
             float w = wMax * taper;
-            // inner (concave)  -  warm, dim body
-            int o = (vi++) * 10;
-            float bIn = 0.20f + 0.30f * taper;
-            v[o] = (R - w) * dirX; v[o+1] = (R - w) * dirY; v[o+2] = 0f;
-            v[o+3] = 1.0f * bIn; v[o+4] = 0.45f * bIn; v[o+5] = 0.14f * bIn; v[o+6] = 1f;
-            v[o+7] = 0f; v[o+8] = 0f; v[o+9] = 1f;
-            // outer (convex)  -  white-hot leading edge
-            o = (vi++) * 10;
-            float bOut = 0.65f + 0.35f * taper;
-            v[o] = (R + w) * dirX; v[o+1] = (R + w) * dirY; v[o+2] = 0f;
-            v[o+3] = 1.0f * bOut; v[o+4] = 0.96f * bOut; v[o+5] = 0.82f * bOut; v[o+6] = 1f;
-            v[o+7] = 0f; v[o+8] = 0f; v[o+9] = 1f;
+            // the blade is brightest a little past centre (the swing's "leading" half)
+            float glow = (0.35f + 0.65f * taper) * (0.75f + 0.25f * t);
+            for (int r = 0; r < rows; r++) {
+                int o = (vi++) * 10;
+                float rr = R + off[r] * w;
+                v[o] = rr * dirX; v[o+1] = rr * dirY; v[o+2] = 0f;
+                v[o+3] = col[r][0] * glow; v[o+4] = col[r][1] * glow; v[o+5] = col[r][2] * glow; v[o+6] = 1f;
+                v[o+7] = 0f; v[o+8] = 0f; v[o+9] = 1f;
+            }
         }
-        int[] idx = new int[seg * 6];
+        int[] idx = new int[seg * (rows - 1) * 6];
         int ii = 0;
         for (int i = 0; i < seg; i++) {
-            int a = i*2, b = i*2+1, c = i*2+2, d = i*2+3;
-            idx[ii++] = a; idx[ii++] = c; idx[ii++] = b;
-            idx[ii++] = b; idx[ii++] = c; idx[ii++] = d;
+            for (int r = 0; r < rows - 1; r++) {
+                int a = i * rows + r, b = a + 1, c = a + rows, d = c + 1;
+                idx[ii++] = a; idx[ii++] = c; idx[ii++] = b;
+                idx[ii++] = b; idx[ii++] = c; idx[ii++] = d;
+            }
         }
         return new com.leaf.game.render.Mesh(v, idx);
     }
@@ -7790,6 +8098,7 @@ public class Window {
         if (orbTorus  == null) orbTorus  = orbBuildTorus(0.05f, 72, 8);
         if (orbSphere == null) orbSphere = orbBuildSphere(14, 20);
         if (orbCyl    == null) orbCyl    = orbBuildCylinder(28);
+        if (fxGlowSphere == null) fxGlowSphere = buildNormalSphere(12, 18);
         Matrix4f pv = new Matrix4f(projection).mul(view);
 
         glEnable(GL_BLEND);
@@ -7808,7 +8117,7 @@ public class Window {
                     float scale = e.s0 + (e.s1 - e.s0) * snapE;
                     float rise  = f < 0.06f ? f / 0.06f : 1f;
                     float fall  = f > 0.5f ? (1f - (f - 0.5f) / 0.5f) : 1f;
-                    float br    = rise * fall * 1.9f;   // softer so the gradient/colour reads (not pure white)
+                    float br    = rise * fall * 1.35f;  // keep under the white shoulder so amber reads
                     if (br <= 0.01f) break;
                     Matrix4f m = faceMatrix(e.x, e.y, e.z, e.dx, e.dy, e.dz)
                             .rotateZ(e.roll + e.sweep * snapE).scale(scale);
@@ -7825,11 +8134,25 @@ public class Window {
                     break;
                 }
                 case FX_BURST: {
+                    // Soft glowing orb: hot core, edges fade to nothing (was a flat disc).
                     float ease = 1f - (1f - f) * (1f - f);
                     float rad  = e.s0 + (e.s1 - e.s0) * ease;
-                    float br   = (1f - f) * (1f - f) * 3.0f;
-                    orbDraw(shader, pv, orbSphere,
+                    float br   = (1f - f) * (1f - f) * 2.0f;
+                    orbDrawSoft(shader, pv, fxGlowSphere,
                             new Matrix4f().translate(e.x, e.y, e.z).scale(rad),
+                            e.r * br, e.g * br, e.b * br, 1);
+                    break;
+                }
+                case FX_SPARK: {
+                    float br = (1f - f);
+                    br = br * br * 3.2f;
+                    float sp = (float) Math.sqrt(e.vx * e.vx + e.vy * e.vy + e.vz * e.vz);
+                    if (sp < 0.05f || br < 0.02f) break;
+                    float len = Math.max(0.12f, Math.min(0.85f, sp * 0.045f));
+                    float nx = e.vx / sp, ny = e.vy / sp, nz = e.vz / sp;
+                    orbDraw(shader, pv, orbCyl,
+                            cylAlong(e.x - nx * len, e.y - ny * len, e.z - nz * len, nx, ny, nz,
+                                     len, 0.028f * e.s0),
                             e.r * br, e.g * br, e.b * br);
                     break;
                 }

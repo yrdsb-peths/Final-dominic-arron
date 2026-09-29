@@ -1233,105 +1233,7 @@ class WindowHud {
             draw.addText(cx - tw/2,     screenH * 0.18f,      gold, txt);
         }
 
-        // ── LIGHTNING BOLT RENDERING ──────────────────────────────────────────
-        // Multiple parallel zigzag paths per bolt for a thick, impressive look.
-        if (!win.player.lightning.activeBolts.isEmpty()) {
-            Matrix4f vp = new Matrix4f(camera.getProjectionMatrix()).mul(camera.getViewMatrix());
-            for (com.leaf.game.entity.LightningController.LightningBolt bolt : win.player.lightning.activeBolts) {
-                float bright = bolt.brightness();
-                if (bright < 0.01f) continue;
-
-                // Project the target win.world position to screen
-                org.joml.Vector4f cp = new org.joml.Vector4f(
-                        bolt.worldTarget.x, bolt.worldTarget.y, bolt.worldTarget.z, 1.0f).mul(vp);
-                if (cp.w <= 0f) continue; // behind camera
-                float ndcX = cp.x / cp.w;
-                float ndcY = cp.y / cp.w;
-                if (Math.abs(ndcX) > 1.5f || Math.abs(ndcY) > 1.5f) continue; // far off screen
-
-                float tScrX = (ndcX + 1f) * 0.5f * screenW;
-                float tScrY = (1f - ndcY) * 0.5f * screenH;
-
-                // Chain bolts use blue-white; primary bolts use white-gold
-                boolean chain = bolt.isChain;
-
-                // ── Wide ambient glow ────────────────────────────────────────
-                int glowA = ImGui.colorConvertFloat4ToU32(
-                        chain ? 0.3f : 0.8f, chain ? 0.6f : 0.85f, 1.0f, 0.06f * bright);
-                draw.addCircleFilled(tScrX, tScrY, 120f * bright, glowA);
-                draw.addCircleFilled(tScrX, tScrY, 60f * bright, ImGui.colorConvertFloat4ToU32(
-                        chain ? 0.4f : 0.9f, chain ? 0.7f : 0.90f, 1.0f, 0.12f * bright));
-
-                // ── Draw 5 parallel zigzag paths ─────────────────────────────
-                // Each path has its own seeded offsets, producing a dense bolt cluster.
-                int segments = 14;
-                for (int path = 0; path < 5; path++) {
-                    java.util.Random boltRng = new java.util.Random(bolt.hashCode() ^ (path * 0x9e3779b9));
-                    // Each path originates slightly offset from the impact point
-                    float originX = tScrX + (boltRng.nextFloat() - 0.5f) * 80f;
-                    float originY = -30f; // above screen top
-
-                    float[] bx = new float[segments + 1];
-                    float[] by = new float[segments + 1];
-                    bx[0] = originX;
-                    by[0] = originY;
-                    bx[segments] = tScrX + (boltRng.nextFloat() - 0.5f) * 8f;
-                    by[segments] = tScrY;
-
-                    float jitterScale = (path == 0) ? 100f : 60f + path * 10f;
-                    for (int s = 1; s < segments; s++) {
-                        float t = (float) s / segments;
-                        float midX = bx[0] + (tScrX - bx[0]) * t;
-                        float midY = by[0] + (tScrY - by[0]) * t;
-                        bx[s] = midX + (boltRng.nextFloat() - 0.5f) * jitterScale * (1f - t * 0.6f);
-                        by[s] = midY + (boltRng.nextFloat() - 0.5f) * 6f;
-                    }
-
-                    // Layer stack: wide outer glow -> medium fill -> thin bright core
-                    float[][] layers = path == 0
-                            // Primary path: massive, juicy
-                            ? new float[][]{{38f, 0.04f}, {22f, 0.12f}, {12f, 0.30f}, {5f, 0.70f}, {2f, 1.00f}}
-                            // Secondary paths: thinner, supporting glow
-                            : new float[][]{{20f, 0.03f}, {10f, 0.09f}, {4f, 0.22f}, {1.5f, 0.60f}};
-
-                    for (float[] layer : layers) {
-                        float th = layer[0];
-                        float a = Math.min(1f, layer[1] * bright);
-                        int col = chain
-                                ? ImGui.colorConvertFloat4ToU32(0.3f, 0.6f, 1.0f, a)
-                                : ImGui.colorConvertFloat4ToU32(0.92f, 0.96f, 1.0f, a);
-                        for (int s = 0; s < segments; s++) {
-                            draw.addLine(bx[s], by[s], bx[s + 1], by[s + 1], col, th);
-                        }
-                    }
-                }
-
-                // ── Impact burst at target ────────────────────────────────────
-                if (bright > 0.3f) {
-                    float r1 = 55f * bright;
-                    float r2 = 28f * bright;
-                    draw.addCircleFilled(tScrX, tScrY, r1,
-                            ImGui.colorConvertFloat4ToU32(chain ? 0.4f : 1.0f, chain ? 0.7f : 0.95f, 1.0f, 0.20f * bright));
-                    draw.addCircleFilled(tScrX, tScrY, r2,
-                            ImGui.colorConvertFloat4ToU32(1.0f, 1.0f, 0.9f, bright * 0.90f));
-                    // Radiating sparks
-                    java.util.Random sparkRng = new java.util.Random(bolt.hashCode() ^ 0xdeadbeef);
-                    int numSparks = chain ? 6 : 12;
-                    for (int sk = 0; sk < numSparks; sk++) {
-                        float ang = sparkRng.nextFloat() * (float) (2 * Math.PI);
-                        float len = (20f + sparkRng.nextFloat() * 40f) * bright;
-                        float sa = 0.6f * bright;
-                        int sparkCol = chain
-                                ? ImGui.colorConvertFloat4ToU32(0.4f, 0.7f, 1.0f, sa)
-                                : ImGui.colorConvertFloat4ToU32(1.0f, 0.95f, 0.6f, sa);
-                        draw.addLine(tScrX, tScrY,
-                                tScrX + (float) Math.cos(ang) * len,
-                                tScrY + (float) Math.sin(ang) * len,
-                                sparkCol, 2.5f * bright);
-                    }
-                }
-            }
-        }
+        // (Lightning bolts are real 3D geometry now — see Window.fxJaggedBolt.)
 
         // ── SCREEN FLASH on fresh strike ──────────────────────────────────────
         // When a new bolt is at peak brightness, flash the whole screen white briefly
@@ -1340,7 +1242,7 @@ class WindowHud {
             if (b.brightness() > 0.85f) peakBright = Math.max(peakBright, b.brightness());
         }
         if (peakBright > 0.85f) {
-            float flashA = (peakBright - 0.85f) / 0.15f * 0.45f;
+            float flashA = (peakBright - 0.85f) / 0.15f * 0.15f;
             draw.addRectFilled(0, 0, screenW, screenH,
                     ImGui.colorConvertFloat4ToU32(0.85f, 0.90f, 1.0f, flashA));
         }

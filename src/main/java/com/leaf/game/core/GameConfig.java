@@ -4,6 +4,20 @@ public class GameConfig {
     public static long  seed           = 1L;
     public static int   renderDistance = 6;
 
+    // ── GRAPHICS ──────────────────────────────────────────────────────────────
+    /** Real-time sun/moon shadows (trees, cliffs, overhangs). Costs one extra terrain pass. */
+    public static boolean shadows       = true;
+    /** Shadow map resolution. 2048 is crisp; drop to 1024 on weak laptops. */
+    public static int     shadowMapSize = 2048;
+    /** Radius (blocks) around the player that receives shadows. */
+    public static float   shadowRadius  = 72f;
+    /** HDR post-processing: soft bloom on emissive light, colour grade, vignette. */
+    public static boolean postFx        = true;
+    /** Corner darkening strength of the post-process vignette (0 = off). */
+    public static float   vignette      = 0.32f;
+    /** Dev: multiplier on ability-VFX ageing (1 = normal). Set via /fxslow for tuning. */
+    public static float   fxTimeScale   = 1.0f;
+
     // ── HEIGHT MAPPING ────────────────────────────────────────────────────────
     public static int heightBase  = 200;
     public static int heightRange = 100;

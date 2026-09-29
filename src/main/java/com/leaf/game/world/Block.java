@@ -230,5 +230,44 @@ public enum Block {
                 && this != PINK_PETALS && this != GLOW_LICHEN;
     }
     public boolean isLiquid() { return this == WATER || this == MESA_WATER || this == LAVA; }
+
+    // ── Surface styles for untextured blocks ─────────────────────────────────
+    // Blocks without a PNG used to render as one flat colour. The terrain shader
+    // now paints procedural pixel-art detail on them, chosen by this style id
+    // (the mesher packs it into the unused UV channel). Keep these ids in sync
+    // with the STYLE_* constants in fragment.glsl.
+    public static final int STYLE_ROCK    = 0;  // grainy stone: pixel grain + mineral blotches
+    public static final int STYLE_SOFT    = 1;  // sand / soil / ash / grass tops: fine low-contrast grain
+    public static final int STYLE_FOLIAGE = 2;  // leaves & canopy: clumpy high-contrast speckle
+    public static final int STYLE_WOOD    = 3;  // logs: bark grooves on sides, growth rings on top
+    public static final int STYLE_WATER   = 4;  // animated ripples, fresnel sky reflection, sun glint
+    public static final int STYLE_GLOW    = 5;  // self-lit: lava, magma, glowcaps (pulses, blooms)
+    public static final int STYLE_CRYSTAL = 6;  // ice & crystals: smooth facets with an inner gleam
+    public static final int STYLE_PLAIN   = 7;  // man-made / items: untouched flat colour
+    public static final int STYLE_BIOLUM  = 8;  // glowcaps & lichen: lit by day, glowing at night
+
+    /** Which procedural surface the terrain shader paints on this (untextured) block. */
+    public int surfaceStyle() {
+        return switch (this) {
+            case SAND, RED_SAND, ASH, MUD, CLAY, ANCIENT_SOIL, MESA_GRASS, MESA_DIRT, MESA_SAND,
+                 MESA_BLUE_SNOW, MESA_BLUE_SOIL, SAKURA_GRASS, SAKURA_SOIL, MYCELIUM,
+                 AMETHYST_GRASS, CRYSTAL_SOIL, AUTUMN_GRASS, PINK_PETALS, CRATER_BLOOM,
+                 STONE_LICHEN -> STYLE_SOFT;
+            case OAK_LEAVES, SAKURA_LEAVES, MAPLE_LEAVES_RED, MAPLE_LEAVES_GOLD,
+                 MAPLE_LEAVES_ORANGE, HANGING_ROOT -> STYLE_FOLIAGE;
+            case OAK_LOG, SAKURA_LOG, MAPLE_LOG, CHARRED_LOG, PETRIFIED_WOOD, PETRIFIED_BARK,
+                 MUSHROOM_STEM -> STYLE_WOOD;
+            case WATER, MESA_WATER -> STYLE_WATER;
+            case LAVA, MAGMA -> STYLE_GLOW;
+            case GLOWCAP_RED, GLOWCAP_TEAL, GLOWCAP_BLUE, GLOW_LICHEN -> STYLE_BIOLUM;
+            case ICE, CRYSTAL_AMETHYST, CRYSTAL_QUARTZ, CRYSTAL_CITRINE, CRYSTAL_ROSE,
+                 IMPACT_GLASS, OBSIDIAN -> STYLE_CRYSTAL;
+            case PIPE_BODY, PIPE_LIP, TORCH, HOTDOG, GATLING_GUN, GRAPPLING_HOOK, TELESCOPE,
+                 MAT_CRYSTAL_CORE, MAT_AETHER_SHARD, MAT_GLOW_SPORE, MAT_MOLTEN_CORE,
+                 WPN_ORBITAL, WPN_SNIPER, WPN_TIMESTOP, WPN_STONE_CANNON, WPN_DEPRIVATION,
+                 AIR -> STYLE_PLAIN;
+            default -> STYLE_ROCK;
+        };
+    }
     public boolean isOpaque() { return this.a >= 1.0f; }
 }

@@ -194,8 +194,108 @@ public class CommandHandler {
                 win.player.position.set(foundX + 0.5f, surfaceY, foundZ + 0.5f);
                 int dist = (int) Math.sqrt(bestDistSq);
                 win.chatHistory.add("[System]: Warped to " + parts[1] + " biome, " + dist + " blocks away.");
+                System.out.println("[Biome] warp " + parts[1] + " -> " + foundX + " " + surfaceY + " " + foundZ);
                 break;
             }
+
+            // ── Capture helpers: frame the same shot twice (before/after a visual change) ──
+            case "tp": {
+                if (parts.length < 4) { win.chatHistory.add("Usage: /tp <x> <y> <z>"); break; }
+                try {
+                    win.player.position.set(Float.parseFloat(parts[1]),
+                            Float.parseFloat(parts[2]), Float.parseFloat(parts[3]));
+                    // "/tp x y z fly" hovers there (flight mode) instead of dropping.
+                    if (parts.length > 4 && parts[4].equalsIgnoreCase("fly")) win.player.debugMode = true;
+                    win.chatHistory.add("[System]: Teleported.");
+                } catch (NumberFormatException ex) {
+                    win.chatHistory.add("[System]: /tp needs numbers.");
+                }
+                break;
+            }
+            case "look": {
+                if (parts.length < 3) { win.chatHistory.add("Usage: /look <yawDeg> <pitchDeg>"); break; }
+                try {
+                    win.camera.yaw   = (float) Math.toRadians(Float.parseFloat(parts[1]));
+                    win.camera.pitch = (float) Math.toRadians(Float.parseFloat(parts[2]));
+                    win.camera.clampPitch();
+                } catch (NumberFormatException ex) {
+                    win.chatHistory.add("[System]: /look needs numbers.");
+                }
+                break;
+            }
+            case "time": {
+                if (parts.length < 2) {
+                    win.chatHistory.add("Usage: /time <0-1 | dawn | noon | dusk | night>");
+                    break;
+                }
+                float t;
+                switch (parts[1].toLowerCase()) {
+                    case "dawn"  -> t = 0.26f;
+                    case "noon"  -> t = 0.50f;
+                    case "dusk"  -> t = 0.735f;
+                    case "night" -> t = 0.95f;
+                    default -> {
+                        try { t = Float.parseFloat(parts[1]); }
+                        catch (NumberFormatException ex) { t = -1f; }
+                    }
+                }
+                if (t < 0f) { win.chatHistory.add("[System]: Unknown time."); break; }
+                win.dayNight.time = t - (float) Math.floor(t);
+                win.dayNight.recompute();
+                break;
+            }
+            case "hud":
+                win.hudHidden = !win.hudHidden;
+                win.chatHistory.clear();
+                break;
+            case "arena": {
+                // A flat grass stage floating over the current spot, with a ring of
+                // enemies — a consistent, readable set for demos and VFX capture.
+                int cx = (int) Math.floor(win.player.position.x);
+                int cz = (int) Math.floor(win.player.position.z);
+                int top = 0;
+                for (int dx = -2; dx <= 2; dx++)
+                    for (int dz = -2; dz <= 2; dz++)
+                        top = Math.max(top, surfaceYAt(cx + dx, cz + dz));
+                int y = Math.min(top + 6, 250);
+                int r = 22;
+                for (int dx = -r; dx <= r; dx++) {
+                    for (int dz = -r; dz <= r; dz++) {
+                        if (dx * dx + dz * dz > r * r) continue;
+                        win.world.setBlock(cx + dx, y - 1, cz + dz, Block.STONE);
+                        win.world.setBlock(cx + dx, y, cz + dz, Block.GRASS);
+                        for (int h = 1; h <= 12; h++) win.world.setBlock(cx + dx, y + h, cz + dz, Block.AIR);
+                    }
+                }
+                win.player.position.set(cx + 0.5f, y + 1.2f, cz + 0.5f);
+                win.player.debugMode = false;
+                int count = parts.length > 1 ? Integer.parseInt(parts[1]) : 5;
+                Enemy.Type[] mix = { Enemy.Type.ZOMBIE, Enemy.Type.THROWER, Enemy.Type.SLIME,
+                                     Enemy.Type.GOLEM, Enemy.Type.SPIDER };
+                for (int i = 0; i < count; i++) {
+                    double a = -Math.PI / 2 + (i - (count - 1) / 2.0) * 0.32;   // a fan in front (+X is yaw 0)
+                    float ex = cx + 0.5f + (float) Math.cos(a + Math.PI / 2) * 16f;
+                    float ez = cz + 0.5f + (float) Math.sin(a + Math.PI / 2) * 16f;
+                    boolean dummies = parts.length > 2 && parts[2].startsWith("d");   // "/arena 5 dummy"
+                    win.enemyManager.spawnAt(ex, y + 1.2f, ez, dummies ? Enemy.Type.DUMMY : mix[i % mix.length]);
+                }
+                win.camera.yaw = 0f;
+                win.camera.pitch = (float) Math.toRadians(-6);
+                win.chatHistory.add("[System]: Arena ready.");
+                break;
+            }
+            case "fxslow":
+                GameConfig.fxTimeScale = parts.length > 1 ? Float.parseFloat(parts[1])
+                        : (GameConfig.fxTimeScale < 1f ? 1f : 0.15f);
+                win.chatHistory.add("[System]: VFX time scale " + GameConfig.fxTimeScale);
+                break;
+            case "peace":
+                // Calm world for scenery shots: no waves, no roamers, clear the field.
+                win.enemyManager.wavesEnabled = false;
+                win.enemyManager.freeExploreMode = false;
+                for (Enemy e : win.enemyManager.getEnemies()) e.alive = false;
+                win.chatHistory.add("[System]: Peace — waves and roamers off.");
+                break;
 
             case "explore":
                 win.enemyManager.freeExploreMode = !win.enemyManager.freeExploreMode;

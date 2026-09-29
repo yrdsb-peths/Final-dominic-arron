@@ -83,9 +83,9 @@ public class ScreenEffectManager {
     /** Red tint — use for snipe kills / headshots */
     public void flashSnipe()     { flash(0.9f, 0.05f, 0.05f, 0.55f, 0.10f); }
     /** Deep black — use for large explosions */
-    public void flashExplosion() { flash(0f,   0f,    0f,    0.85f, 0.08f); }
+    public void flashExplosion() { flash(0f,   0f,    0f,    0.45f, 0.06f); }
     /** Bright white — use for melee heavy hits */
-    public void flashMeleeHit()  { flash(1f,   1f,    1f,    0.70f, 0.05f); }
+    public void flashMeleeHit()  { flash(1f,   0.95f, 0.85f, 0.22f, 0.05f); }
     /** Orange — use for fire / grab slam */
     public void flashGrabSlam()  { flash(1f,   0.5f,  0f,    0.50f, 0.12f); }
     /** Healing green */

@@ -105,9 +105,148 @@ uniform vec2  viewportSize;   // FBO dimensions (set to PORTAL_FBO_W/H)
 // vertexColor × emissiveTint directly, so the geometry glows at full intensity in
 // the blackout and the bloom pass picks it up.
 uniform int  emissiveMode;
+uniform int  fxSoft;         // 0 flat, 1 soft core orb, 2 fresnel shell (see orbDrawSoft)
 uniform vec3 emissiveTint;   // per-object colour × intensity (additive-bloomed)
 
+// ── SUN / MOON SHADOWS (ShadowMap.java) ────────────────────────────────────────
+uniform sampler2DShadow shadowMap;
+uniform mat4  lightVP;
+uniform int   shadowOn;
+uniform float shadowTexel;   // world size of one shadow texel (for the normal-offset bias)
+
+// ── WORLD CLOCK (seconds) — animates water ripples, lava flow, crystal glints ──
+uniform float uTime;
+
 out vec4 FragColor;
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  PROCEDURAL SURFACES — pixel-art detail for blocks that have no PNG texture.
+//  The chunk mesher packs Block.surfaceStyle() into a NEGATIVE vertexUV.x
+//  (u = -(style + 1.5)), so textured blocks and every non-terrain mesh (u >= 0)
+//  are untouched. Keep these ids in sync with Block.STYLE_*.
+// ═════════════════════════════════════════════════════════════════════════════
+const int STYLE_ROCK    = 0;
+const int STYLE_SOFT    = 1;
+const int STYLE_FOLIAGE = 2;
+const int STYLE_WOOD    = 3;
+const int STYLE_WATER   = 4;
+const int STYLE_GLOW    = 5;
+const int STYLE_CRYSTAL = 6;
+const int STYLE_PLAIN   = 7;
+const int STYLE_BIOLUM  = 8;
+
+float hash13(vec3 p) {
+    p  = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+float hash12(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash12(i),               hash12(i + vec2(1, 0)), f.x),
+               mix(hash12(i + vec2(0, 1)),  hash12(i + vec2(1, 1)), f.x), f.y);
+}
+// In-plane 2D coordinates of a voxel face (so patterns run along the face).
+vec2 facePlane(vec3 wp, vec3 n) {
+    vec3 a = abs(n);
+    if (a.y > 0.5) return wp.xz;
+    if (a.x > 0.5) return vec2(wp.z, wp.y);
+    return vec2(wp.x, wp.y);
+}
+
+// Albedo multiplier for a procedural style. Pixels are 1/16 block, snapped in
+// 3D *inside* the block so neighbouring faces of one block agree at the edges.
+vec3 surfaceDetail(int style, vec3 wp, vec3 n) {
+    vec3  px    = floor((wp - n * 0.01) * 16.0);           // 16×16 texels per face
+    float g     = hash13(px);                              // per-texel grain
+    vec2  fp    = facePlane(wp, n) * 16.0;
+    float blot  = vnoise(floor(fp / 3.0) + hash13(floor(wp - n * 0.01)) * 17.0);
+
+    if (style == STYLE_ROCK) {
+        float m = 0.84 + 0.16 * g + 0.16 * (blot - 0.5);
+        if (g > 0.955) m *= 0.78;                          // dark mineral fleck
+        if (g < 0.030) m *= 1.12;                          // bright speck
+        return vec3(m);
+    }
+    if (style == STYLE_SOFT) {
+        float m = 0.90 + 0.12 * g + 0.06 * (blot - 0.5);
+        if (n.y > 0.5 && g > 0.94) m *= 1.10;             // sun-catching grains on top faces
+        return vec3(m);
+    }
+    if (style == STYLE_FOLIAGE) {
+        // Pixel-snapped leaf clumps: bright tips, darker gaps, per-texel grain.
+        float c = vnoise(floor(fp) / 2.5 + hash13(floor(wp - n * 0.01)) * 11.0);
+        float m = 0.80 + 0.28 * c + 0.10 * g;
+        if (c < 0.28) m *= 0.82;                           // shadowed gaps between leaf clumps
+        return vec3(m) * mix(vec3(1.0), vec3(1.03, 1.05, 0.95), step(0.72, c)); // sunlit clump tips
+    }
+    if (style == STYLE_WOOD) {
+        if (abs(n.y) > 0.5) {                              // end grain: growth rings
+            vec2  c = fract(wp.xz) - 0.5;
+            float r = floor(length(c) * 16.0);
+            float ring = step(0.5, fract(r * 0.5));
+            return vec3(0.80 + 0.14 * ring + 0.06 * g) * (length(c) > 0.42 ? 0.80 : 1.0);
+        }
+        vec2  fpl  = facePlane(wp, n);
+        float col  = floor(fpl.x * 16.0);                  // vertical bark grooves
+        float grv  = hash12(vec2(col, floor(wp.x + wp.z)));
+        float m    = 0.78 + 0.24 * grv + 0.06 * g;
+        if (grv < 0.18) m *= 0.78;
+        return vec3(m);
+    }
+    if (style == STYLE_CRYSTAL) {
+        vec2  fpl = facePlane(wp, n);
+        float diag = fract((fpl.x + fpl.y) * 1.5);         // facet bands
+        return vec3(0.88 + 0.16 * smoothstep(0.35, 0.5, diag) * smoothstep(0.65, 0.5, diag) + 0.05 * g);
+    }
+    if (style == STYLE_GLOW) {
+        return vec3(0.85 + 0.15 * g);
+    }
+    if (style == STYLE_BIOLUM) {                           // mushroom cap: pale spots on the cap
+        float spot = step(0.80, vnoise(floor(fp) / 3.0 + hash13(floor(wp - n * 0.01)) * 7.0));
+        return vec3(0.86 + 0.10 * g) + spot * 0.45;
+    }
+    return vec3(1.0);                                      // WATER / PLAIN
+}
+
+// 0 = fully shadowed, 1 = fully lit. Normal-offset + 3×3 PCF on top of the
+// hardware 2×2 compare gives soft, acne-free edges. Fades out at the map border.
+float sunShadow(vec3 N, vec3 L) {
+    if (shadowOn == 0) return 1.0;
+    float ndl = max(dot(N, L), 0.0);
+    vec3  p   = vWorldPos + N * shadowTexel * (1.2 + 1.8 * (1.0 - ndl));
+    vec4  lp  = lightVP * vec4(p, 1.0);
+    vec3  sc  = lp.xyz / lp.w * 0.5 + 0.5;
+    if (sc.z >= 1.0) return 1.0;
+    vec2  ts  = 1.0 / vec2(textureSize(shadowMap, 0));
+    float s   = 0.0;
+    for (int i = -1; i <= 1; i++)
+        for (int j = -1; j <= 1; j++)
+            s += texture(shadowMap, vec3(sc.xy + vec2(i, j) * ts * 1.25, sc.z - 0.0004));
+    s /= 9.0;
+    float edge = max(abs(sc.x - 0.5), abs(sc.y - 0.5));
+    return mix(s, 1.0, smoothstep(0.40, 0.49, edge));
+}
+
+// Filmic shoulder that matches the old pow(1/1.2) curve in darks + mids but
+// rolls highlights off softly instead of clipping snow & sand to flat white.
+vec3 filmic(vec3 c) {
+    c = max(c, 0.0);
+    // Tone-map LUMINANCE (keeps hue + saturation: pink blossoms stay pink) ...
+    float L  = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float Lt = 1.0 - exp(-L * 1.8);
+    vec3  byLum = c * (Lt / max(L, 1e-4));
+    // ... but fall back to per-channel as a channel nears white, so very bright
+    // saturated light still desaturates toward white like real film.
+    vec3  perCh = 1.0 - exp(-c * 1.8);
+    float hot   = smoothstep(0.75, 1.25, max(byLum.r, max(byLum.g, byLum.b)));
+    return mix(byLum, perCh, hot);
+}
 
 void main() {
     // ── DEPRIVATION DOME force-field (hex energy shield) ──────────────────────
@@ -154,51 +293,113 @@ void main() {
 
     // ── EMISSIVE (unlit) ──────────────────────────────────────────────────────
     if (emissiveMode == 1) {
-        FragColor = vec4(vertexColor.rgb * emissiveTint, 1.0);
+        vec3 em = vertexColor.rgb * emissiveTint;
+        if (fxSoft == 1) {            // soft glowing orb: hot core, edges dissolve
+            float facing = abs(dot(normalize(vertexNormal), normalize(camPos - vWorldPos)));
+            em *= facing * facing * (0.35 + 0.65 * facing);
+        } else if (fxSoft == 2) {     // fresnel shell: bright silhouette, clear centre
+            float facing = abs(dot(normalize(vertexNormal), normalize(camPos - vWorldPos)));
+            em *= pow(1.0 - facing, 2.0) * 1.6 + 0.05;
+        }
+        FragColor = vec4(em, 1.0);
         return;
     }
 
-    float diffuse = max(0.0, dot(normalize(vertexNormal), normalize(sunDirection)));
-    // Coloured lighting: ambient sky-bounce + tinted directional luminary (sun/moon).
-    vec3 lit = ambientColor * ambientStrength + sunColor * (sunStrength * diffuse);
+    vec3  N       = normalize(vertexNormal);
+    vec3  L       = normalize(sunDirection);
+    vec3  V       = normalize(camPos - vWorldPos);
+    float diffuse = max(0.0, dot(N, L));
+
+    // ── HEMISPHERE AMBIENT + GROUND BOUNCE ────────────────────────────────────
+    // Up-facing surfaces see the whole sky dome; walls see half of it plus light
+    // bounced off the sunlit ground; undersides see mostly bounce. This is what
+    // keeps shadowed faces readable (they used to fall to near-black navy).
+    float skyW    = 0.5 + 0.5 * N.y;
+    vec3  skyAmb  = mix(ambientColor, skyZenithCol * 1.1, 0.30);
+    vec3  ambient = ambientStrength * skyAmb * mix(0.90, 1.40, skyW);
+    vec3  bounce  = sunColor * vec3(1.0, 0.94, 0.84) * (sunStrength * 0.34) * (1.0 - skyW);
+    float shadow  = diffuse > 0.0 ? sunShadow(N, L) : 0.0;
+    // Bounce light comes off *sunlit* ground, so it dims a little inside big shadows too.
+    vec3  lit     = ambient + bounce * (0.55 + 0.45 * shadow) + sunColor * (sunStrength * diffuse * shadow);
 
     // ── Torch point lights — warm pools of light that pop at night ─────────────
-    vec3 nN = normalize(vertexNormal);
     for (int i = 0; i < torchCount; i++) {
         vec3  d    = torchPos[i] - vWorldPos;
         float dist = length(d);
         float att  = clamp(1.0 - dist / torchRad[i], 0.0, 1.0);
         att = att * att;                                   // soft quadratic falloff
-        float ndl  = max(0.0, dot(nN, d / max(dist, 0.001)));
+        float ndl  = max(0.0, dot(N, d / max(dist, 0.001)));
         lit += torchCol[i] * att * (0.35 + 0.65 * ndl);
     }
 
-    // ── Base colour: vertex colour or texture × vertex colour ─────────────────
-    vec4 baseColor;
-    if (useTexture == 1) {
+    // ── Base colour: atlas texture, procedural surface, or plain vertex colour ─
+    int   style    = -1;                                   // -1 = not a procedural surface
+    vec4  baseColor;
+    if (useTexture == 1 && vertexUV.x < 0.0) {
+        style     = int(floor(-vertexUV.x)) - 1;
+        baseColor = vec4(vertexColor.rgb * surfaceDetail(style, vWorldPos, N), vertexColor.a);
+    } else if (useTexture == 1) {
         vec4 texColor = texture(texSampler, vertexUV);
         baseColor = texColor * vertexColor;
     } else {
         baseColor = vertexColor;
     }
 
-    // ── CONSTANT PER-FACE SHADING ("cheap AO") ────────────────────────────────
-    // Voxel terrain reads flat when the sun isn't at a strong angle, because every
-    // visible face gets nearly the same light. A fixed brightness per face *axis*
-    // (top brightest, bottom darkest, X-sides darker than Z-sides) gives blocks
-    // constant form and depth independent of the sun — the classic Minecraft-style
-    // "smooth lighting" look, but per-face and free. Tune the four constants to taste.
-    {
-        vec3  nF = normalize(vertexNormal);
-        float faceShade;
-        if      (nF.y >  0.5) faceShade = 1.00;   // top    — full light
-        else if (nF.y < -0.5) faceShade = 0.62;   // bottom — darkest (underside / overhangs)
-        else                  faceShade = mix(0.80, 0.90, abs(nF.z));  // sides: ±X darker than ±Z
-        lit *= faceShade;
+    // ── Gentle per-face-axis shading: keeps block edges crisp even under flat
+    //    overcast light. (Softer than before — the hemisphere term does most of it.)
+    float faceShade;
+    if      (N.y >  0.5) faceShade = 1.00;
+    else if (N.y < -0.5) faceShade = 0.80;
+    else                 faceShade = mix(0.88, 0.94, abs(N.z));
+    lit *= faceShade;
+
+    vec3 gammaCorrected = filmic(baseColor.rgb * lit);
+    float outAlpha = baseColor.a;
+
+    // ── WATER: ripples, fresnel sky reflection, sun glint ──────────────────────
+    if (style == STYLE_WATER && N.y > 0.5) {
+        vec2  wp2 = vWorldPos.xz;
+        float t   = uTime;
+        float r1  = vnoise(wp2 * 0.9 + vec2(t * 0.35, t * 0.22));
+        float r2  = vnoise(wp2 * 2.3 - vec2(t * 0.50, -t * 0.31));
+        vec3  Np  = normalize(vec3((r1 - 0.5) * 0.35 + (r2 - 0.5) * 0.18, 1.0,
+                                   (r2 - 0.5) * 0.35 - (r1 - 0.5) * 0.18));
+        float fres = 0.08 + 0.92 * pow(1.0 - max(dot(Np, V), 0.0), 5.0);
+        vec3  R    = reflect(-V, Np);
+        vec3  refl = mix(skyHorizonCol, skyZenithCol, smoothstep(0.0, 0.6, R.y));
+        float spec = pow(max(dot(R, L), 0.0), 180.0) * sunStrength;
+        gammaCorrected  = mix(gammaCorrected, refl * 1.05, clamp(fres * 0.85, 0.0, 0.85));
+        gammaCorrected += sunColor * spec * 2.4;           // HDR glint → bloom
+        gammaCorrected += vec3(0.05, 0.10, 0.12) * (r1 * r2) * (ambientStrength + sunStrength); // caustic shimmer
+        outAlpha = mix(baseColor.a, 0.95, fres);
     }
 
-    vec3 color          = baseColor.rgb * lit;
-    vec3 gammaCorrected = pow(clamp(color, 0.0, 1.0), vec3(1.0 / 1.2));
+    // ── GLOW: lava, magma & glowcaps are self-lit and breathe ──────────────────
+    if (style == STYLE_GLOW) {
+        vec2  fp   = floor(facePlane(vWorldPos, N) * 16.0) / 16.0;   // pixel-snapped flow
+        float flow = vnoise(fp * 1.6 + vec2(uTime * 0.25, -uTime * 0.18));
+        float crust = smoothstep(0.30, 0.55, vnoise(fp * 3.0 - uTime * 0.05));
+        float pulse = 0.85 + 0.15 * sin(uTime * 1.7 + flow * 6.2831);
+        vec3  hot   = vertexColor.rgb * (0.9 + 0.9 * flow) * pulse;
+        // cooler crust patches on top, bright molten seams between them
+        gammaCorrected = mix(hot * 1.35, gammaCorrected * 0.9 + hot * 0.35, crust * 0.55);
+    }
+
+    // ── BIOLUMINESCENCE: lit normally by day; the darker it gets, the more the
+    //    caps glow on their own (HDR at night so the bloom haloes them). ────────
+    if (style == STYLE_BIOLUM) {
+        float dark  = clamp(1.0 - (sunStrength * 0.9 + ambientStrength), 0.0, 1.0);
+        float pulse = 0.85 + 0.15 * sin(uTime * 1.3 + dot(floor(vWorldPos), vec3(1.7, 2.3, 3.1)));
+        gammaCorrected += baseColor.rgb * (0.18 + 1.10 * dark) * pulse;
+    }
+
+    // ── CRYSTAL: an inner gleam + rare twinkles so geodes sparkle at night ─────
+    if (style == STYLE_CRYSTAL) {
+        float fres  = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+        vec3  px    = floor((vWorldPos - N * 0.01) * 16.0);
+        float twk   = step(0.992, hash13(px + floor(uTime * 3.0)));
+        gammaCorrected += vertexColor.rgb * (0.10 + 0.35 * fres) + vec3(1.2) * twk;
+    }
 
     // ── UNDERWATER FOG ────────────────────────────────────────────────────────
     if (isUnderwater == 1) {
@@ -381,36 +582,39 @@ void main() {
                  }
              }
 
-             // ── DISTANCE FOG (Seamless horizon blending) ──────────────────────────────
-             // Do not apply fog to emissive volumetric effects (like the orbital laser)
-             if (emissiveMode == 0 && domeMode == 0) {
-                 float distToCam = length(vWorldPos - camPos);
+    // ── AERIAL PERSPECTIVE + DISTANCE FOG ─────────────────────────────────────
+    // Distant terrain fades into a sky-coloured haze (lifted toward the sun), so
+    // ridgelines stack into layered silhouettes instead of all reading at the
+    // same contrast. The last 30% of the render distance then fades fully into
+    // the sky, hiding chunk edges. Emissive effects and the dome are exempt.
+    if (emissiveMode == 0 && domeMode == 0 && isUnderwater == 0) {
+        float distToCam = length(vWorldPos - camPos);
+        vec3  ray       = normalize(vWorldPos - camPos);
 
-                 // Start fading at 55% of the render distance, completely hidden at 100%
-                 float fogStart = fogEnd * 0.85;
-                 float fogFactor = smoothstep(fogStart, fogEnd, distToCam);
+        // Reconstruct the sky colour behind this pixel.
+        float t = smoothstep(0.0, 0.55, ray.y);
+        vec3 skyCol = mix(skyHorizonCol, skyZenithCol, t);
+        float band = exp(-abs(ray.y) * 5.5) * sunsetFactor;
+        skyCol = mix(skyCol, vec3(1.0, 0.48, 0.26), band * 0.75);
 
-                 if (fogFactor > 0.001) {
-                     vec3 ray = normalize(vWorldPos - camPos);
+        // Sun in-scatter: haze glows warmer when looking toward the sun.
+        float sunAmt = pow(max(dot(ray, normalize(sunDirection)), 0.0), 6.0);
+        vec3  hazeCol = skyCol + sunColor * sunAmt * sunStrength * 0.20;
 
-                     // Reconstruct the exact sky background color behind this pixel
-                     float t = smoothstep(0.0, 0.55, ray.y);
-                     vec3 skyCol = mix(skyHorizonCol, skyZenithCol, t);
+        // Deep underground: the haze turns to pitch-black abyss instead of blue sky.
+        float depthFactor = smoothstep(190.0, 130.0, min(vWorldPos.y, camPos.y));
+        vec3  abyssFogCol = vec3(0.012, 0.006, 0.022);
+        skyCol  = mix(skyCol,  abyssFogCol, depthFactor);
+        hazeCol = mix(hazeCol, abyssFogCol, depthFactor);
 
-                     // Add the warm sunset band if looking toward the sun
-                     float band = exp(-abs(ray.y) * 5.5) * sunsetFactor;
-                     skyCol = mix(skyCol, vec3(1.0, 0.48, 0.26), band * 0.75);
+        // Height-weighted haze: valleys hold more of it than peaks.
+        float heightK = exp(-max(vWorldPos.y - 200.0, 0.0) * 0.012);
+        float haze    = (1.0 - exp(-distToCam * 0.0085 * (0.55 + 0.45 * heightK))) * 0.80;
+        gammaCorrected = mix(gammaCorrected, hazeCol, haze);
 
-                     // Deep underground fix: if the player or terrain is deep down,
-                     // fade the fog to pitch-black abyss color instead of blue sky!
-                     float depthFactor = smoothstep(190.0, 130.0, min(vWorldPos.y, camPos.y));
-                     vec3 abyssFogCol = vec3(0.012, 0.006, 0.022);
-                     skyCol = mix(skyCol, abyssFogCol, depthFactor);
+        float fogFactor = smoothstep(fogEnd * 0.70, fogEnd, distToCam);
+        gammaCorrected  = mix(gammaCorrected, skyCol, fogFactor);
+    }
 
-                     // Apply the atmospheric fade
-                     gammaCorrected = mix(gammaCorrected, skyCol, fogFactor);
-                 }
-             }
-
-             FragColor = vec4(gammaCorrected, baseColor.a * alphaMultiplier);
-         }
+    FragColor = vec4(gammaCorrected, outAlpha * alphaMultiplier);
+}
