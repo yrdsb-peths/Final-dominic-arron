@@ -212,6 +212,40 @@ Want to see the whole arsenal without playing all 11 waves? `/showcase` unlocks 
 | `/spawn spider` (chat) | Spawn a procedural IK spider enemy |
 | `/spawn treant` (chat) | Spawn a Treant (disguised tree enemy) |
 
+**Screenshot / trailer helpers:**
+
+| Command | What it does |
+|---|---|
+| `/hud` | Hide the whole HUD (damage numbers stay) for clean shots |
+| `/time <0-1 \| dawn \| noon \| dusk \| night>` | Set the time of day |
+| `/tp <x> <y> <z> [fly]` | Teleport (`fly` = hover there) |
+| `/look <yaw> <pitch>` | Point the camera (degrees) |
+| `/arena [n] [dummy]` | Build a flat grass stage with a fan of enemies (or practice dummies) in front of you |
+| `/peace` | Stop waves & roamers and clear enemies |
+| `/fxslow [scale]` | Slow only the ability VFX (e.g. `/fxslow 0.2`) to study an effect |
+
+---
+
+## Graphics
+
+The renderer is a custom OpenGL 3.3 pipeline:
+
+- **Lighting** — hemisphere sky light + warm ground bounce + the sun/moon, all driven by the day/night cycle; creatures share the same light.
+- **Shadows** — real-time sun/moon shadow map (trees, cliffs, overhangs), soft-filtered.
+- **Materials** — every block without a PNG gets procedural pixel-art detail (rock grain, soil, leaf clumps, bark, crystal); water ripples and reflects the sky; lava flows and glows; mushroom caps and lichen glow at night.
+- **Ground cover** — swaying grass tufts and wildflower meadows.
+- **Atmosphere** — aerial-perspective haze, sun-lit drifting clouds.
+- **Post-processing** — HDR buffer with a restrained bloom (only true light sources glow), a filmic tone curve, subtle grade and vignette.
+
+If a laptop struggles, these switches live at the top of `GameConfig.java`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `shadows` | `true` | Turn off to skip the extra shadow pass |
+| `shadowMapSize` | `2048` | `1024` is much cheaper and still looks good |
+| `postFx` | `true` | Bloom / grade / vignette |
+| `vignette` | `0.32` | Corner darkening (0 = off) |
+
 ---
 
 ## Full Ability Reference
@@ -282,4 +316,4 @@ The game is built on a **custom 3D engine** (teacher-approved):
 - **Star data:** Yale Bright Star Catalogue (BSC5)
 - **Procedural Spider Kinematics:** Inverse Kinematics (IK) and leg-gait algorithm principles adapted from [TheCymaera's Minecraft Spider](https://github.com/TheCymaera/minecraft-spider)
 - **Canyon Generation:** Sedimentary mesa noise algorithms adapted from [GelamiSalami's Hybrid SDF-Voxel Traversal](https://www.shadertoy.com/view/dtVSzw)
-- **Mountain Generation:** Analytical derivative FBM and terrain erosion algorithms adapted from [Inigo Quilez's Elevated](https://www.shadertoy.com/view/MdX3Rr)
+- **Mountain Generation:** Analytical derivative FBM and terrain erosion algorithms adapted from [Inigo Quilez's Elevated](https://www.shadertoy.com/view/MdX3Rr)- **Fonts:** [Cinzel](https://github.com/NDISCOVER/Cinzel) and [Rajdhani](https://github.com/itfoundry/rajdhani) — SIL Open Font License (see `src/main/resources/fonts/`)

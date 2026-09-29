@@ -27,6 +27,11 @@ Everything below is ordered to fix that first, then build on it.
   endless scaling rule. Today's balance is reproduced exactly — now go *design*
   it: themed waves ("all spiders"), a boss wave, a breather wave.
 
+- **Visual overhaul** — shadows, procedural materials, water/lava, ground cover,
+  clouds, HDR bloom + grade, creatures lit by the world, combat feedback (sparks,
+  damage numbers, hit-stop), 3D lightning, new title/loading/cutscene typography.
+  See README → Graphics.
+
 ---
 
 ## Next — lower the cost of content (do these in order)
