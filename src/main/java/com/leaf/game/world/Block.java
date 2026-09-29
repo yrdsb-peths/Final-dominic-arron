@@ -130,7 +130,14 @@ public enum Block {
     // ── Pickups (appended LAST — chunk saves store ordinals) ─────
     HOTDOG          (0.78f, 0.32f, 0.12f, 1.0f, 99f),  // heal pickup dropped by enemies
     // (appended after HOTDOG to keep saved ordinals stable)
-    WPN_DEPRIVATION (0.95f, 0.78f, 0.20f, 1.0f, 99f);  // Deprivation Domain — golden hemisphere, LMB toggles
+    WPN_DEPRIVATION (0.95f, 0.78f, 0.20f, 1.0f, 99f),  // Deprivation Domain — golden hemisphere, LMB toggles
+    // ── Ground cover (appended LAST to keep saved ordinals stable) ──────────
+    // Rendered as crossed quads with procedural pixel-art blades (see
+    // ChunkMesher.addPlant + STYLE_PLANT in fragment.glsl). Walk-through.
+    TALL_GRASS       (0.36f, 0.66f, 0.22f, 0.999f, 0.0f),  // tuft of grass
+    FLOWER_POPPY     (0.92f, 0.20f, 0.18f, 0.999f, 0.0f),  // red poppy
+    FLOWER_DANDELION (1.00f, 0.84f, 0.20f, 0.999f, 0.0f),  // yellow dandelion
+    FLOWER_CORNFLOWER(0.40f, 0.52f, 1.00f, 0.999f, 0.0f);  // blue cornflower
     public final float r, g, b, a;
     public final float hardness;
 
@@ -227,8 +234,20 @@ public enum Block {
         // the player walks through them.
         return this != AIR && this != WATER && this != MESA_WATER
                 && this != HANGING_ROOT && this != CRATER_BLOOM
-                && this != PINK_PETALS && this != GLOW_LICHEN;
+                && this != PINK_PETALS && this != GLOW_LICHEN && !isPlant();
     }
+    /** Cross-quad ground cover (grass tufts, flowers, lichen). */
+    public boolean isPlant() {
+        return this == TALL_GRASS || this == FLOWER_POPPY || this == FLOWER_DANDELION
+                || this == FLOWER_CORNFLOWER || this == GLOW_LICHEN;
+    }
+    /** Flat ground carpet drawn just above the block below (petals). */
+    public boolean isCarpet() { return this == PINK_PETALS; }
+    /** True for the flower variants (a coloured head on a green stem). */
+    public boolean isFlower() {
+        return this == FLOWER_POPPY || this == FLOWER_DANDELION || this == FLOWER_CORNFLOWER;
+    }
+
     public boolean isLiquid() { return this == WATER || this == MESA_WATER || this == LAVA; }
 
     // ── Surface styles for untextured blocks ─────────────────────────────────
@@ -245,6 +264,9 @@ public enum Block {
     public static final int STYLE_CRYSTAL = 6;  // ice & crystals: smooth facets with an inner gleam
     public static final int STYLE_PLAIN   = 7;  // man-made / items: untouched flat colour
     public static final int STYLE_BIOLUM  = 8;  // glowcaps & lichen: lit by day, glowing at night
+    public static final int STYLE_PLANT   = 9;  // grass tuft: cut-out pixel blades, sways
+    public static final int STYLE_FLOWER  = 10; // flower: green stem + coloured head, sways
+    public static final int STYLE_GLOWPLANT = 11; // glowing lichen sprig
 
     /** Which procedural surface the terrain shader paints on this (untextured) block. */
     public int surfaceStyle() {
@@ -259,7 +281,10 @@ public enum Block {
                  MUSHROOM_STEM -> STYLE_WOOD;
             case WATER, MESA_WATER -> STYLE_WATER;
             case LAVA, MAGMA -> STYLE_GLOW;
-            case GLOWCAP_RED, GLOWCAP_TEAL, GLOWCAP_BLUE, GLOW_LICHEN -> STYLE_BIOLUM;
+            case GLOWCAP_RED, GLOWCAP_TEAL, GLOWCAP_BLUE -> STYLE_BIOLUM;
+            case GLOW_LICHEN -> STYLE_GLOWPLANT;
+            case TALL_GRASS -> STYLE_PLANT;
+            case FLOWER_POPPY, FLOWER_DANDELION, FLOWER_CORNFLOWER -> STYLE_FLOWER;
             case ICE, CRYSTAL_AMETHYST, CRYSTAL_QUARTZ, CRYSTAL_CITRINE, CRYSTAL_ROSE,
                  IMPACT_GLASS, OBSIDIAN -> STYLE_CRYSTAL;
             case PIPE_BODY, PIPE_LIP, TORCH, HOTDOG, GATLING_GUN, GRAPPLING_HOOK, TELESCOPE,

@@ -147,6 +147,9 @@ const int STYLE_GLOW    = 5;
 const int STYLE_CRYSTAL = 6;
 const int STYLE_PLAIN   = 7;
 const int STYLE_BIOLUM  = 8;
+const int STYLE_PLANT   = 9;
+const int STYLE_FLOWER  = 10;
+const int STYLE_GLOWPLANT = 11;
 
 float hash13(vec3 p) {
     p  = fract(p * 0.1031);
@@ -351,7 +354,41 @@ void main() {
     vec4  baseColor;
     if (useTexture == 1 && vertexUV.x < 0.0) {
         style     = int(floor(-vertexUV.x)) - 1;
-        baseColor = vec4(vertexColor.rgb * surfaceDetail(style, vWorldPos, N), vertexColor.a);
+        if (style >= STYLE_PLANT && style <= STYLE_GLOWPLANT) {
+            // ── Cut-out pixel blades on a crossed quad ────────────────────────
+            float s01 = clamp((fract(-vertexUV.x) - 0.05) / 0.9, 0.0, 1.0);
+            float v01 = vertexUV.y;
+            float px  = floor(s01 * 12.0), py = floor(v01 * 12.0);
+            // Per-plant constant (the mesher's per-block shade lives in the colour),
+            // so the blade pattern never shifts as the quad sways across cells.
+            float plantId = dot(vertexColor.rgb, vec3(911.0, 523.0, 347.0));
+            float seed = hash12(vec2(px * 1.37 + plantId, plantId * 0.13));
+            float bladeTop = 0.30 + 0.70 * seed;                   // per-column blade height
+            bool  gap = hash12(vec2(px + 7.0, plantId)) < 0.28;
+            vec3  green = vec3(0.30, 0.58, 0.20);
+            vec3  c;
+            if (style == STYLE_FLOWER) {
+                // single stem in the middle two columns, a 4×3 head on top
+                // diamond-shaped bloom (Manhattan distance from the head centre)
+                float hd   = abs(px - 5.5) + abs(py - 9.5);
+                bool  head = hd <= 2.6;
+                bool  eye  = hd <= 0.6;                               // darker centre
+                bool  stem = (px == 5.0 || px == 6.0) && py < 9.0;
+                bool  leaf = (px == 3.0 || px == 4.0 || px == 7.0 || px == 8.0)
+                             && py >= 3.0 + abs(px - 5.5) * 0.5 && py < 4.5 + abs(px - 5.5) * 0.5;
+                if (!(stem || head || leaf)) discard;
+                c = head ? (eye ? vertexColor.rgb * 0.45 + vec3(0.12, 0.08, 0.0)
+                                : vertexColor.rgb * (1.02 - 0.08 * hd / 2.6))
+                         : green * (0.75 + 0.25 * v01);
+            } else {
+                if (gap || v01 > bladeTop) discard;
+                float tip = smoothstep(bladeTop - 0.25, bladeTop, v01);
+                c = vertexColor.rgb * (0.55 + 0.45 * v01) * (0.9 + 0.2 * seed) + vec3(0.05, 0.07, 0.0) * tip;
+            }
+            baseColor = vec4(c, 1.0);
+        } else {
+            baseColor = vec4(vertexColor.rgb * surfaceDetail(style, vWorldPos, N), vertexColor.a);
+        }
     } else if (useTexture == 1) {
         vec4 texColor = texture(texSampler, vertexUV);
         baseColor = texColor * vertexColor;
@@ -405,6 +442,11 @@ void main() {
         float dark  = clamp(1.0 - (sunStrength * 0.9 + ambientStrength), 0.0, 1.0);
         float pulse = 0.85 + 0.15 * sin(uTime * 1.3 + dot(floor(vWorldPos), vec3(1.7, 2.3, 3.1)));
         gammaCorrected += baseColor.rgb * (0.18 + 1.10 * dark) * pulse;
+    }
+
+    if (style == STYLE_GLOWPLANT) {
+        float dark = clamp(1.0 - (sunStrength * 0.9 + ambientStrength), 0.0, 1.0);
+        gammaCorrected += baseColor.rgb * (0.15 + 1.2 * dark) * vertexUV.y;
     }
 
     // ── CRYSTAL: an inner gleam + rare twinkles so geodes sparkle at night ─────

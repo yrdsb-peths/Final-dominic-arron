@@ -175,6 +175,12 @@ public class CommandHandler {
                 for (int dx = -range; dx <= range; dx += step) {
                     for (int dz = -range; dz <= range; dz += step) {
                         if (win.worldGen.biomeAt(px + dx, pz + dz) == target) {
+                            // Lowland biomes: skip matches buried under alpine peaks
+                            // (the biome map says "forest" but the terrain is snow).
+                            boolean lowland = target != com.leaf.game.world.gen.biome.Biome.ICY_PEAKS
+                                    && target != com.leaf.game.world.gen.biome.Biome.TUNDRA
+                                    && target != com.leaf.game.world.gen.biome.Biome.SNOWY_PLAINS;
+                            if (lowland && win.worldGen.surfaceYEstimate(px + dx, pz + dz) > 262) continue;
                             float dSq = dx * dx + (float) dz * dz;
                             if (dSq < bestDistSq) {
                                 bestDistSq = dSq;

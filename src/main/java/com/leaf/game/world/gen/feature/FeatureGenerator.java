@@ -826,6 +826,23 @@ public class FeatureGenerator {
                     int treeChance = (hum > 0.1f) ? 15 : 60; // Dense in forests, sparse in plains
                     if ((rng % treeChance) == 0) {
                         buildOakTree(chunk, lx, sy, lz);
+                        continue;
+                    }
+                }
+
+                // 3. Ground cover: grass tufts everywhere on grass, wildflowers in
+                //    loose patches (a low-frequency hash gates the patches so they
+                //    cluster like real meadows instead of spreading evenly).
+                if (ground == Block.GRASS && sy + 1 < Chunk.HEIGHT
+                        && chunk.getBlock(lx, sy + 1, lz) == Block.AIR) {
+                    int roll = (int) ((rng >>> 12) % 100);
+                    long patch = regionHash(seed, Math.floorDiv(wx, 9), Math.floorDiv(wz, 9), 77);
+                    boolean meadow = (patch & 7) < 3;                       // ~3/8 of 9×9 cells
+                    if (meadow && roll < 9) {
+                        Block[] fl = { Block.FLOWER_POPPY, Block.FLOWER_DANDELION, Block.FLOWER_CORNFLOWER };
+                        place(chunk, lx, sy + 1, lz, fl[(int) ((patch >>> 5) % 3)]);
+                    } else if (roll < 27) {
+                        place(chunk, lx, sy + 1, lz, Block.TALL_GRASS);
                     }
                 }
             }

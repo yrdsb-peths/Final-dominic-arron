@@ -162,6 +162,16 @@ public class ChunkMesher {
                     GrowableFloats verts   = isTrans ? tVertsBuf : oVertsBuf;
                     GrowableInts   indices = isTrans ? tIdxBuf   : oIdxBuf;
 
+                    // Ground cover: crossed quads (plants) or a thin mat (carpets).
+                    if (block.isPlant()) {
+                        addPlant(tVertsBuf, tIdxBuf, block, wx, wy, wz);
+                        continue;
+                    }
+                    if (block.isCarpet()) {
+                        addCarpet(tVertsBuf, tIdxBuf, block, wx, wy, wz);
+                        continue;
+                    }
+
                     float h00 = block.isLiquid() ? getLiquidCornerHeight(blockCache, metaCache, x, y, z, 0, 0) : 1f;
                     float h10 = block.isLiquid() ? getLiquidCornerHeight(blockCache, metaCache, x, y, z, 1, 0) : 1f;
                     float h11 = block.isLiquid() ? getLiquidCornerHeight(blockCache, metaCache, x, y, z, 1, 1) : 1f;
@@ -320,6 +330,59 @@ public class ChunkMesher {
             indices.add(baseIndex);     indices.add(baseIndex + 1); indices.add(baseIndex + 3);
             indices.add(baseIndex + 1); indices.add(baseIndex + 2); indices.add(baseIndex + 3);
         }
+    }
+
+    /**
+     * Two crossed vertical quads through the block centre. U packs the surface
+     * style plus the across-quad coordinate (u = -(style + 1.05 + 0.9·s)), V is
+     * the height 0→1 — the shader cuts pixel blades from that and the vertex
+     * shader sways the top. Normals point up so tufts light like the ground.
+     */
+    private static void addPlant(GrowableFloats verts, GrowableInts indices,
+                                 Block block, int wx, float wy, int wz) {
+        int h = (wx * 73856093) ^ (wz * 19349663) ^ ((int) wy * 83492791);
+        float jx = ((h & 0xFF) / 255f - 0.5f) * 0.3f;          // jitter off the grid
+        float jz = (((h >>> 8) & 0xFF) / 255f - 0.5f) * 0.3f;
+        float ht = 0.75f + (((h >>> 16) & 0xFF) / 255f) * 0.35f;
+        float cx = wx + 0.5f + jx, cz = wz + 0.5f + jz, r = 0.46f;
+        float base = -(block.surfaceStyle() + 1.05f);
+        float shade = blockShade(wx, (int) wy, wz);
+        float[][] ends = { { -r, -r, r, r }, { -r, r, r, -r } };
+        for (float[] e : ends) {
+            int bi = verts.vertexCount();
+            float[][] q = {
+                    { cx + e[0], wy,      cz + e[1], 0f, 0f },
+                    { cx + e[2], wy,      cz + e[3], 1f, 0f },
+                    { cx + e[2], wy + ht, cz + e[3], 1f, 1f },
+                    { cx + e[0], wy + ht, cz + e[1], 0f, 1f } };
+            for (float[] v : q) {
+                verts.add(v[0]); verts.add(v[1]); verts.add(v[2]);
+                verts.add(block.r * shade); verts.add(block.g * shade); verts.add(block.b * shade);
+                verts.add(block.a);
+                verts.add(0f); verts.add(1f); verts.add(0f);
+                verts.add(base - 0.9f * v[3]);
+                verts.add(v[4]);
+            }
+            indices.add(bi); indices.add(bi + 1); indices.add(bi + 2);
+            indices.add(bi + 2); indices.add(bi + 3); indices.add(bi);
+        }
+    }
+
+    /** A flat mat lying just above the block beneath (petal carpets). */
+    private static void addCarpet(GrowableFloats verts, GrowableInts indices,
+                                  Block block, int wx, float wy, int wz) {
+        int bi = verts.vertexCount();
+        float y = wy + 0.04f;
+        float style = -(block.surfaceStyle() + 1.5f);
+        float[][] q = { { wx, y, wz }, { wx + 1, y, wz }, { wx + 1, y, wz + 1 }, { wx, y, wz + 1 } };
+        for (float[] v : q) {
+            verts.add(v[0]); verts.add(v[1]); verts.add(v[2]);
+            verts.add(block.r); verts.add(block.g); verts.add(block.b); verts.add(block.a);
+            verts.add(0f); verts.add(1f); verts.add(0f);
+            verts.add(style); verts.add(0f);
+        }
+        indices.add(bi); indices.add(bi + 1); indices.add(bi + 2);
+        indices.add(bi + 2); indices.add(bi + 3); indices.add(bi);
     }
 
     private static Chunk getTargetChunk(int x, int z, Chunk center, Chunk nX, Chunk pX, Chunk nZ, Chunk pZ, Chunk nXnZ, Chunk pXpZ, Chunk nXpZ, Chunk pXnZ) {

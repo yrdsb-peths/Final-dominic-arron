@@ -1,8 +1,11 @@
 #version 330 core
-// Depth-only: nothing to shade. Water (surface style 4) never casts a shadow —
-// the world under a lake would otherwise go dark.
+// Depth-only: nothing to shade. Water (style 4) and small ground-cover plants
+// (styles 9+) cast no shadow.
 in float vStyleU;
 
 void main() {
-    if (vStyleU < 0.0 && int(floor(-vStyleU)) - 1 == 4) discard;
+    if (vStyleU < 0.0) {
+        int st = int(floor(-vStyleU)) - 1;
+        if (st == 4 || st >= 9) discard;   // water + ground-cover plants cast no shadow
+    }
 }
