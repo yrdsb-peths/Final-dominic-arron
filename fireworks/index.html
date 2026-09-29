@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- artifact:start -->
+<title>Nocturne Fireworks</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..600;1,6..96,400..600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: the harbour fills the screen. The programme sits in the upper-left sky like a
+     printed playbill; controls hug the edges and fade away once the show is running. */
+  :root {
+    --night: #04060c;
+    --glass: rgba(6, 9, 18, 0.72);
+    --paper: #ede7dc;
+    --mist: #9aa1b5;
+    --ember: #f2b36a;
+    --rule: rgba(237, 231, 220, 0.18);
+    --display: "Bodoni Moda", "Bodoni 72", Didot, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--night); color: var(--paper); font-family: var(--mono); overflow: hidden; -webkit-font-smoothing: antialiased; }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; background: var(--night); }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--ember); outline-offset: 3px; }
+  .label { font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; }
+
+  /* Programme (intro) */
+  .intro {
+    position: fixed; inset: 0 auto auto 0; z-index: 3; box-sizing: border-box;
+    width: min(560px, 100%); padding: calc(env(safe-area-inset-top, 0px) + clamp(24px, 7vh, 96px)) 16px 24px clamp(16px, 6vw, 88px);
+    display: grid; gap: clamp(10px, 2.2vh, 18px); align-content: start;
+    background: radial-gradient(120% 90% at 0% 20%, rgba(3, 5, 10, 0.78), rgba(3, 5, 10, 0) 72%);
+    transition: opacity 0.9s ease, transform 0.9s ease;
+  }
+  .intro.gone { opacity: 0; transform: translateY(-12px); pointer-events: none; }
+  .eyebrow { margin: 0; color: var(--ember); }
+  .title { margin: 0; font-family: var(--display); font-style: italic; font-weight: 500; font-size: clamp(56px, min(11vw, 15vh), 128px); line-height: 0.88; letter-spacing: -0.02em; text-wrap: balance; }
+  .lede { margin: 0; font-family: var(--display); font-size: clamp(17px, 1.6vw, 20px); line-height: 1.45; max-width: 34ch; color: var(--paper); }
+  .program { list-style: none; margin: 4px 0 0; padding: 0; display: grid; border-top: 1px solid var(--rule); max-width: 420px; }
+  .program li { display: grid; grid-template-columns: 2.4em 1fr auto; align-items: baseline; gap: 12px; padding: clamp(3px, 0.8vh, 7px) 0; border-bottom: 1px solid var(--rule); }
+  .program .n { font-family: var(--display); font-style: italic; color: var(--mist); font-size: 15px; }
+  .program .name { font-family: var(--display); font-size: 19px; }
+  .program .t { font-size: 12px; color: var(--mist); font-variant-numeric: tabular-nums; }
+  .specs { margin: 0; font-size: 11px; letter-spacing: 0.08em; color: var(--mist); font-variant-numeric: tabular-nums; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+  .btn { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; padding: 13px 20px; border: 1px solid var(--rule); border-radius: 999px; transition: background 0.2s, color 0.2s, border-color 0.2s; }
+  .btn:hover { border-color: var(--paper); }
+  .btn.primary { background: var(--paper); color: var(--night); border-color: var(--paper); }
+  .btn.primary:hover { background: var(--ember); border-color: var(--ember); }
+  .note { margin: 0; font-size: 11.5px; line-height: 1.6; color: var(--mist); max-width: 44ch; }
+
+  /* Heads-up bar */
+  .hud {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 4; box-sizing: border-box;
+    padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 14px;
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px;
+    background: linear-gradient(rgba(3, 5, 10, 0.6), rgba(3, 5, 10, 0));
+    transition: opacity 0.6s ease;
+  }
+  .brand { font-family: var(--display); font-style: italic; font-size: 22px; margin-right: 14px; text-transform: none; letter-spacing: 0; }
+  .hud-act { color: var(--mist); }
+  .hud nav { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .hud nav button { padding: 4px 0; color: var(--mist); transition: color 0.2s; }
+  .hud nav button:hover, .hud nav button[aria-pressed="true"] { color: var(--paper); }
+
+  /* Movement title */
+  .act { position: fixed; z-index: 2; left: clamp(16px, 6vw, 88px); top: calc(env(safe-area-inset-top, 0px) + clamp(80px, 14vh, 150px)); max-width: min(520px, calc(100% - 32px)); pointer-events: none; opacity: 0; transform: translateY(8px); transition: opacity 1.4s ease, transform 1.4s ease; }
+  .act.on { opacity: 1; transform: none; }
+  .act-n { color: var(--ember); }
+  .act-name { margin: 8px 0 10px; font-family: var(--display); font-style: italic; font-weight: 500; font-size: clamp(44px, 7vw, 84px); line-height: 0.95; }
+  .act-blurb { margin: 0; font-family: var(--display); font-size: 17px; line-height: 1.45; max-width: 32ch; color: var(--paper); }
+
+  /* Cue log */
+  .cuelog { position: fixed; z-index: 2; left: 16px; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; pointer-events: none; font-size: 11px; color: rgba(237, 231, 220, 0.62); font-variant-numeric: tabular-nums; }
+  .cuelog li { display: grid; grid-template-columns: 4.2em 4.6em 3.4em minmax(0, 1fr); gap: 10px; white-space: nowrap; transition: opacity 0.6s; }
+  .cuelog li span:last-child { overflow: hidden; text-overflow: ellipsis; }
+  .cuelog li:nth-last-child(2) { opacity: 0.7; } .cuelog li:nth-last-child(3) { opacity: 0.45; } .cuelog li:nth-last-child(4) { opacity: 0.25; }
+  .cuelog .q { color: var(--ember); }
+
+  /* Timeline */
+  .timeline { position: fixed; z-index: 4; left: 0; right: 0; bottom: 0; box-sizing: border-box; padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 14px); display: flex; align-items: center; gap: 16px; transition: opacity 0.6s ease; }
+  .track { position: relative; flex: 1; height: 18px; cursor: pointer; }
+  .track::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--rule); }
+  .fill { position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--paper); transform-origin: left; transform: scaleX(0); }
+  .mark { position: absolute; top: -6px; transform: translateX(-50%); font-family: var(--display); font-style: italic; font-size: 13px; color: var(--mist); padding: 0 4px; }
+  .mark:hover { color: var(--paper); }
+  .clock { font-size: 11px; color: var(--mist); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  body.idle .hud, body.idle .timeline { opacity: 0; }
+  body.idle { cursor: none; }
+
+  /* Firing script */
+  .script { position: fixed; z-index: 6; top: 0; right: 0; bottom: 0; width: min(560px, 100%); box-sizing: border-box; display: flex; flex-direction: column; background: var(--glass); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-left: 1px solid var(--rule); padding-top: env(safe-area-inset-top, 0px); }
+  .script-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; padding: 22px 20px 14px; border-bottom: 1px solid var(--rule); }
+  .script-head h2 { margin: 0; font-family: var(--display); font-style: italic; font-weight: 500; font-size: 30px; }
+  .script-head p { grid-column: 1 / -1; margin: 0; font-size: 11.5px; color: var(--mist); line-height: 1.5; }
+  .script-body { overflow: auto; flex: 1; padding: 0 12px calc(env(safe-area-inset-bottom, 0px) + 20px); }
+  .script table { border-collapse: collapse; width: 100%; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .script th { position: sticky; top: 0; background: rgba(6, 9, 18, 0.96); text-align: left; font-weight: 500; color: var(--mist); padding: 10px 8px; letter-spacing: 0.12em; text-transform: uppercase; font-size: 10px; }
+  .script td { padding: 6px 8px; border-bottom: 1px solid rgba(237, 231, 220, 0.07); vertical-align: top; color: rgba(237, 231, 220, 0.8); }
+  .script td:nth-child(-n+3) { white-space: nowrap; }
+  .script tr { cursor: pointer; }
+  .script tbody tr:hover td { background: rgba(237, 231, 220, 0.06); }
+  .script tr.act-row td { color: var(--ember); font-family: var(--display); font-style: italic; font-size: 16px; padding-top: 16px; letter-spacing: 0; }
+  .script tr.fired td { color: rgba(237, 231, 220, 0.42); }
+  .script tr.now td { color: var(--ember); }
+
+  /* Free play */
+  .palette { position: fixed; z-index: 4; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); transform: translateX(-50%); width: min(1000px, calc(100% - 32px)); box-sizing: border-box; display: grid; gap: 10px; padding: 12px; background: var(--glass); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); border: 1px solid var(--rule); border-radius: 16px; }
+  .hint { margin: 0; text-align: center; font-size: 11.5px; color: var(--mist); transition: opacity 0.6s; }
+  .hint.gone { opacity: 0; height: 0; margin-top: -10px; }
+  .row { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .row::-webkit-scrollbar { display: none; }
+  .chip { flex: none; font-size: 11px; letter-spacing: 0.06em; padding: 7px 12px; border: 1px solid var(--rule); border-radius: 999px; color: var(--paper); white-space: nowrap; }
+  .chip:hover { border-color: var(--paper); }
+  .chip[aria-pressed="true"] { background: var(--paper); color: var(--night); border-color: var(--paper); }
+  .sw { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4); }
+  .sw[aria-pressed="true"] { border-color: var(--paper); }
+  .sw.mixed { background: conic-gradient(#ff3b30, #ffb340, #7dff5a, #3fd0ff, #8a5cff, #ff4f9a, #ff3b30); }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; align-items: center; }
+  .tools .group { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* End card */
+  .endcard { position: fixed; z-index: 5; inset: 0; display: grid; place-content: center; justify-items: center; gap: 16px; padding: 24px 16px; text-align: center; background: radial-gradient(60% 50% at 50% 45%, rgba(3, 5, 10, 0.7), rgba(3, 5, 10, 0)); opacity: 0; transition: opacity 2s ease; }
+  .endcard.on { opacity: 1; }
+  .endcard .actions { justify-content: center; }
+
+  .nogl { position: fixed; inset: 0; display: grid; place-content: center; padding: 24px; text-align: center; gap: 12px; }
+  .nogl h1 { font-family: var(--display); font-style: italic; font-weight: 500; font-size: 48px; margin: 0; }
+  .nogl p { margin: 0; color: var(--mist); max-width: 46ch; line-height: 1.6; font-size: 13px; }
+
+  body.capture .intro, body.capture .hud, body.capture .timeline, body.capture .cuelog, body.capture .act, body.capture .palette, body.capture .endcard { display: none !important; }
+
+  @media (max-width: 640px) {
+    .intro { gap: 14px; padding-top: calc(env(safe-area-inset-top, 0px) + 28px); }
+    .program li { padding: 5px 0; }
+    .program .name { font-size: 17px; }
+    .cuelog li { grid-template-columns: 4.2em 4.6em minmax(0, 1fr); }
+    .cuelog li .p { display: none; }
+    .cuelog li:nth-last-child(n+3) { display: none; }
+    .brand { font-size: 19px; }
+    .act-blurb { font-size: 15px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .intro, .act, .endcard, .hud, .timeline { transition: none; }
+  }
+</style>
+
+<canvas id="stage" aria-label="A city harbour at night with fireworks over the water"></canvas>
+
+<main id="intro" class="intro">
+  <p class="eyebrow label">Harbour fireworks · a show in six movements</p>
+  <h1 class="title">Nocturne</h1>
+  <p class="lede">Three minutes over a city harbour at night: Japanese round shells, a waterfall poured from the bridge, and a finale fired from five barges.</p>
+  <ol class="program" id="program"></ol>
+  <p class="specs" id="specs"></p>
+  <div class="actions">
+    <button id="begin" class="btn primary" type="button">Begin the show</button>
+    <button id="goFree" class="btn" type="button">Free play</button>
+  </div>
+  <p class="note">Turn your sound on. Each boom lands just under a second after its flash, the way it does from across the water.</p>
+</main>
+
+<header id="hud" class="hud label" hidden>
+  <div><span class="brand">Nocturne</span><span id="hudAct" class="hud-act"></span></div>
+  <nav aria-label="Show controls">
+    <button id="bPause" type="button">Pause</button>
+    <button id="bSound" type="button" aria-pressed="true">Sound on</button>
+    <button id="bScript" type="button" aria-pressed="false">Firing script</button>
+    <button id="bMode" type="button">Free play</button>
+    <button id="bFull" type="button">Fullscreen</button>
+  </nav>
+</header>
+
+<div id="act" class="act" aria-live="polite">
+  <span class="act-n label"></span>
+  <h2 class="act-name"></h2>
+  <p class="act-blurb"></p>
+</div>
+
+<ol id="cuelog" class="cuelog" aria-hidden="true"></ol>
+
+<footer id="timeline" class="timeline" hidden>
+  <div id="track" class="track" role="slider" tabindex="0" aria-label="Show position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="fill" class="fill"></div></div>
+  <span id="clock" class="clock">0:00 / 0:00</span>
+</footer>
+
+<aside id="script" class="script" hidden aria-label="Firing script">
+  <div class="script-head">
+    <h2>Firing script</h2>
+    <button id="scriptClose" class="label" type="button">Close</button>
+    <p>Every cue in the show, timed to the moment each effect breaks. Select a cue to jump there.</p>
+  </div>
+  <div class="script-body">
+    <table>
+      <thead><tr><th>Cue</th><th>Time</th><th>Pos</th><th>Device</th><th>Effect</th></tr></thead>
+      <tbody id="scriptRows"></tbody>
+    </table>
+  </div>
+</aside>
+
+<div id="palette" class="palette" hidden>
+  <p id="hint" class="hint">Tap the sky to fire a shell there. Hold to keep firing. Lower means smaller shells.</p>
+  <div id="chips" class="row" role="group" aria-label="Shell type"></div>
+  <div class="tools">
+    <div id="swatches" class="row" role="group" aria-label="Colour"></div>
+    <div class="group">
+      <button id="bAuto" class="chip" type="button" aria-pressed="false">Autopilot</button>
+      <button id="bFinale" class="chip" type="button">Fire a finale</button>
+    </div>
+  </div>
+</div>
+
+<section id="end" class="endcard" hidden>
+  <p class="eyebrow label">Fin</p>
+  <h2 class="title">Nocturne</h2>
+  <p class="lede">Thank you for watching.</p>
+  <p id="endSpecs" class="specs"></p>
+  <div class="actions">
+    <button id="again" class="btn primary" type="button">Watch again</button>
+    <button id="endFree" class="btn" type="button">Free play</button>
+    <button id="endScript" class="btn" type="button">Firing script</button>
+  </div>
+</section>
+
+<div id="nogl" class="nogl" hidden>
+  <h1>Nocturne</h1>
+  <p>This show needs WebGL 2, which your browser has turned off or does not support. A current Chrome, Edge, Firefox or Safari will run it.</p>
+</div>
+
+<script src="js/core.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/show.js"></script>
+<script src="js/scenery.js"></script>
+<script src="js/render.js"></script>
+<script src="js/app.js"></script>
+<!-- artifact:end -->
+</body>
+</html>
